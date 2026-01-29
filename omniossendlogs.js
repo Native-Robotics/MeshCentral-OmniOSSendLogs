@@ -1,6 +1,7 @@
 /**
-* @description MeshCentral OmniOS Send Logs Plugin (server-side)
-*/
+ * @description MeshCentral Log Exporter Plugin
+ * Adds a button to export device logs to server via console command.
+ */
 
 "use strict";
 
@@ -9,20 +10,22 @@ module.exports.omniossendlogs = function (parent) {
     obj.parent = parent;
     obj.meshServer = parent.parent;
     obj.debug = obj.meshServer.debug;
-    obj.pendingSend = {}; // nodeid => [sessionIds]
-    obj.inflightSend = {}; // nodeid => boolean
-    obj.sendStatus = {}; // nodeid => { status, timestamp, result }
-
+    obj.pending = {}; // nodeid => [sessionIds]
+    obj.inflight = {}; // nodeid => boolean
+    obj.lastResult = {}; // nodeid => { success, message, time }
+    
+    // Client-side state (initialized when running in browser)
+    obj.exportStatus = {}; // nodeid => { status, message, time }
+    
     obj.exports = [
         'onDeviceRefreshEnd',
-        'requestSendLogs',
-        'sendLogsData',
-        'injectGeneral'
+        'exportResult',
+        'triggerExport',
+        'injectGeneral',
+        'escapeHtml'
     ];
 
-    /**
-     * Send message to WebSocket session
-     */
+    // --- server-side helpers ---
     obj.sendToSession = function (sessionid, myparent, msg, grandparent) {
         if (sessionid && grandparent && grandparent.wssessions2 && grandparent.wssessions2[sessionid]) {
             try { grandparent.wssessions2[sessionid].send(JSON.stringify(msg)); return; } catch (e) { }
@@ -32,149 +35,300 @@ module.exports.omniossendlogs = function (parent) {
         }
     };
 
-    /**
-     * Queue session waiting for send response
-     */
     obj.queueSession = function (nodeid, sessionid) {
         if (!nodeid || !sessionid) return;
-        if (!obj.pendingSend[nodeid]) obj.pendingSend[nodeid] = [];
-        if (obj.pendingSend[nodeid].indexOf(sessionid) === -1) obj.pendingSend[nodeid].push(sessionid);
+        if (!obj.pending[nodeid]) obj.pending[nodeid] = [];
+        if (obj.pending[nodeid].indexOf(sessionid) === -1) obj.pending[nodeid].push(sessionid);
     };
 
-    /**
-     * Flush pending sessions with send data
-     */
-    obj.flushPending = function (nodeid, msg) {
-        if (!obj.pendingSend[nodeid] || obj.pendingSend[nodeid].length === 0) return;
-        var sessions = obj.pendingSend[nodeid];
-        delete obj.pendingSend[nodeid];
-        sessions.forEach(function (sid) {
-            obj.sendToSession(sid, null, msg, obj.meshServer);
-        });
+    obj.flushPending = function (nodeid, msg, grandparent) {
+        if (!obj.pending[nodeid]) return;
+        var sessions = obj.pending[nodeid];
+        obj.pending[nodeid] = [];
+        for (var i = 0; i < sessions.length; i++) {
+            var sid = sessions[i];
+            if (grandparent && grandparent.wssessions2 && grandparent.wssessions2[sid]) {
+                try { grandparent.wssessions2[sid].send(JSON.stringify(msg)); } catch (e) { }
+            }
+        }
     };
 
-    /**
-     * Send send logs request to agent
-     */
-    obj.sendAgentCommand = function (nodeid) {
-        if (!nodeid) return;
-        obj.inflightSend[nodeid] = true;
-        
-        console.log('[omniossendlogs] Sending command to agent for node: ' + nodeid);
-        
-        // Send to agent via dispatcher
-        obj.meshServer.SendCommand({
-            nodeid: nodeid,
-            type: 'plugin',
-            pluginaction: 'sendLogs',
-            plugin: 'omniossendlogs'
-        });
-        
-        obj.sendStatus[nodeid] = { status: 'in_progress', timestamp: Date.now() };
+    obj.requestExportFromAgent = function (nodeid) {
+        obj.debug('omniossendlogs', 'requestExportFromAgent called for:', nodeid);
+        if (!nodeid) { obj.debug('omniossendlogs', 'requestExportFromAgent: no nodeid'); return; }
+        if (obj.inflight[nodeid]) { obj.debug('omniossendlogs', 'requestExportFromAgent: already inflight for', nodeid); return; }
+        obj.inflight[nodeid] = true;
+        var agent = obj.meshServer.webserver.wsagents[nodeid];
+        if (agent == null) {
+            obj.debug('omniossendlogs', 'requestExportFromAgent: agent not found for', nodeid);
+            obj.inflight[nodeid] = false;
+            return;
+        }
+        try {
+            obj.debug('omniossendlogs', 'requestExportFromAgent: sending runExport command to', nodeid);
+            agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'runExport' }));
+        } catch (e) {
+            obj.debug('omniossendlogs', 'requestExportFromAgent: error sending to agent', nodeid, e);
+            obj.inflight[nodeid] = false;
+        }
     };
 
-    /**
-     * Handle send response from agent
-     */
-    obj.sendLogsData = function (state, msg) {
-        if (!msg || !msg.nodeid) {
-            console.log('[omniossendlogs] sendLogsData: invalid message');
+    // --- hooks ---
+    obj.hook_agentCoreIsStable = function (myparent, gp) {
+        obj.debug('omniossendlogs', 'hook_agentCoreIsStable called for node:', myparent.dbNodeKey);
+        // No automatic action on agent connect
+    };
+
+    obj.serveraction = function (command, myparent, grandparent) {
+        obj.debug('omniossendlogs', 'serveraction received:', command.pluginaction);
+        switch (command.pluginaction) {
+            case 'triggerExport': {
+                var nodeid = command.nodeid || myparent.dbNodeKey;
+                obj.debug('omniossendlogs', 'triggerExport request for node:', nodeid);
+                if (!nodeid) {
+                    obj.debug('omniossendlogs', 'triggerExport: no nodeid');
+                    return;
+                }
+                // Send immediate "running" status
+                var runningMsg = {
+                    action: 'plugin',
+                    plugin: 'omniossendlogs',
+                    method: 'exportResult',
+                    data: { nodeid: nodeid, status: 'running', message: 'Export started...' }
+                };
+                obj.sendToSession(command.sessionid, myparent, runningMsg, grandparent);
+                obj.queueSession(nodeid, command.sessionid);
+                obj.requestExportFromAgent(nodeid);
+                break;
+            }
+            case 'exportResult': {
+                var node = myparent.dbNodeKey;
+                obj.debug('omniossendlogs', 'exportResult received from agent:', node, 'success:', command.success);
+                if (!node) {
+                    obj.debug('omniossendlogs', 'exportResult: no node');
+                    return;
+                }
+                obj.lastResult[node] = {
+                    success: command.success,
+                    message: command.message || (command.success ? 'Export completed' : 'Export failed'),
+                    time: Date.now()
+                };
+                var outMsg = {
+                    action: 'plugin',
+                    plugin: 'omniossendlogs',
+                    method: 'exportResult',
+                    data: {
+                        nodeid: node,
+                        status: command.success ? 'success' : 'error',
+                        message: obj.lastResult[node].message
+                    }
+                };
+                obj.debug('omniossendlogs', 'exportResult: flushing to pending sessions');
+                obj.flushPending(node, outMsg, grandparent);
+                obj.inflight[node] = false;
+                break;
+            }
+            default:
+                obj.debug('omniossendlogs', 'Unknown pluginaction:', command.pluginaction);
+                break;
+        }
+    };
+
+    // --- web hooks ---
+    obj.registerPluginTab = function () { return null; };
+    obj.on_device_page = function () { return null; };
+
+    // --- client-side helpers ---
+    obj.escapeHtml = function (unsafe) {
+        if (unsafe == null) return '';
+        return String(unsafe)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    };
+
+    obj.injectGeneral = function () {
+        console.log('[omniossendlogs] injectGeneral called');
+        if (typeof document === 'undefined') {
+            console.log('[omniossendlogs] document is undefined (server-side)');
+            return;
+        }
+        if (typeof currentNode === 'undefined' || !currentNode || !currentNode._id) {
+            console.log('[omniossendlogs] currentNode undefined or invalid');
             return;
         }
         
-        var nodeid = msg.nodeid;
-        obj.inflightSend[nodeid] = false;
+        // Find the General content area
+        var p10html = Q('p10html');
+        if (!p10html) {
+            console.log('[omniossendlogs] p10html element not found');
+            return;
+        }
+
+        var table = p10html.querySelector('table');
+        if (!table) {
+            console.log('[omniossendlogs] Table not found in p10html');
+            return;
+        }
+
+        // Remove existing export row if present
+        var existingRow = table.querySelector('#omniossendlogsTableRow');
+        if (existingRow && existingRow.parentNode) {
+            existingRow.parentNode.removeChild(existingRow);
+        }
+
+        // Find insertion point: after Apps row (from omniosversion) or before Hostname
+        var insertAfter = null;
+        var hostnameRow = null;
+        var appsRow = null;
         
-        // Store status
-        obj.sendStatus[nodeid] = {
-            status: msg.success ? 'success' : 'error',
-            timestamp: Date.now(),
-            result: msg.result || (msg.success ? 'Logs sent successfully' : 'Send failed'),
-            error: msg.error || null
+        // Look for Apps row and Hostname row
+        var rows = table.getElementsByTagName('tr');
+        for (var i = 0; i < rows.length; i++) {
+            var cells = rows[i].getElementsByTagName('td');
+            if (cells.length > 0) {
+                var cellText = cells[0].textContent || cells[0].innerText;
+                if (cellText) {
+                    var trimmed = cellText.trim();
+                    // Apps row may have count like "Apps (3)"
+                    if (trimmed === 'Apps' || trimmed.indexOf('Apps') === 0) {
+                        appsRow = rows[i];
+                    }
+                    if (trimmed === 'Hostname') {
+                        hostnameRow = rows[i];
+                    }
+                }
+            }
+        }
+
+        // Determine insertion point
+        if (appsRow) {
+            insertAfter = appsRow;
+        }
+
+        // Get current status
+        var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id] || null;
+        var statusHtml = '';
+        var linkStyle = '';
+        
+        if (status) {
+            if (status.status === 'running') {
+                statusHtml = ' <span style="color:#007bff;">⏳ Running...</span>';
+                linkStyle = 'pointer-events:none;opacity:0.5;';
+            } else if (status.status === 'success') {
+                statusHtml = ' <span style="color:#28a745;">✓ ' + obj.escapeHtml(status.message) + '</span>';
+            } else if (status.status === 'error') {
+                statusHtml = ' <span style="color:#dc3545;">✗ ' + obj.escapeHtml(status.message) + '</span>';
+            }
+        }
+
+        // Create the export row HTML
+        var rowHtml = '<tr id="omniossendlogsTableRow"><td class="style7">Export</td><td class="style9">' +
+            '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' +
+            statusHtml +
+            '</td></tr>';
+
+        // Insert the row
+        if (insertAfter) {
+            insertAfter.insertAdjacentHTML('afterend', rowHtml);
+            console.log('[omniossendlogs] Export row injected after Apps row');
+        } else if (hostnameRow) {
+            hostnameRow.insertAdjacentHTML('beforebegin', rowHtml);
+            console.log('[omniossendlogs] Export row injected before Hostname row');
+        } else {
+            // Fallback: insert at the beginning
+            var tbody = table.querySelector('tbody') || table;
+            if (tbody.children.length > 0) {
+                tbody.children[0].insertAdjacentHTML('afterend', rowHtml);
+            } else {
+                tbody.insertAdjacentHTML('beforeend', rowHtml);
+            }
+            console.log('[omniossendlogs] Export row injected at fallback position');
+        }
+    };
+
+    obj.triggerExport = function () {
+        console.log('[omniossendlogs] triggerExport called');
+        if (typeof meshserver === 'undefined' || typeof currentNode === 'undefined' || !currentNode) {
+            console.log('[omniossendlogs] meshserver or currentNode undefined');
+            return false;
+        }
+        
+        // Check if already running
+        var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id];
+        if (status && status.status === 'running') {
+            console.log('[omniossendlogs] Export already running');
+            return false;
+        }
+        
+        // Set running status immediately for UI feedback
+        pluginHandler.omniossendlogs.exportStatus[currentNode._id] = {
+            status: 'running',
+            message: 'Export started...',
+            time: Date.now()
         };
+        pluginHandler.omniossendlogs.injectGeneral();
         
-        console.log('[omniossendlogs] sendLogsData for node ' + nodeid + ': ' + (msg.success ? 'success' : 'failed'));
-        
-        // Notify all waiting sessions
-        obj.flushPending(nodeid, {
+        // Send request to server
+        console.log('[omniossendlogs] Sending triggerExport request for node:', currentNode._id);
+        meshserver.send({
             action: 'plugin',
             plugin: 'omniossendlogs',
-            pluginaction: 'sendLogsData',
-            nodeid: nodeid,
-            success: msg.success,
-            result: msg.result,
-            error: msg.error
+            pluginaction: 'triggerExport',
+            nodeid: currentNode._id
         });
+        
+        return false;
     };
 
-    /**
-     * Request send (called from UI)
-     */
-    obj.requestSendLogs = function (nodeid, sessionid) {
-        if (!nodeid) return;
-        
-        console.log('[omniossendlogs] requestSendLogs for node: ' + nodeid);
-        
-        if (obj.inflightSend[nodeid]) {
-            obj.queueSession(nodeid, sessionid);
-            console.log('[omniossendlogs] Send already in progress for ' + nodeid + ', queuing session');
+    obj.exportResult = function (state, msg) {
+        console.log('[omniossendlogs] exportResult received:', msg);
+        if (!msg || !msg.data || !msg.data.nodeid) {
+            console.log('[omniossendlogs] exportResult: invalid message structure');
             return;
         }
         
-        obj.queueSession(nodeid, sessionid);
-        obj.sendAgentCommand(nodeid);
-    };
-
-    /**
-     * Inject UI button into General tab
-     */
-    obj.injectGeneral = function () {
-        if (typeof currentNode === 'undefined') {
-            console.log('[omniossendlogs] currentNode is undefined');
-            return;
-        }
+        pluginHandler.omniossendlogs.exportStatus[msg.data.nodeid] = {
+            status: msg.data.status,
+            message: msg.data.message,
+            time: Date.now()
+        };
         
-        // Defensive check to prevent crash if obj.sendStatus is undefined
-        if (!obj.sendStatus) obj.sendStatus = {};
-
-        var nodeid = currentNode._id;
-        var status = obj.sendStatus[nodeid] || {};
-        var statusText = '';
-        
-        if (status.status === 'in_progress') {
-            statusText = ' <span style="color: orange; font-size: 12px;">(sending...)</span>';
-        } else if (status.status === 'success') {
-            statusText = ' <span style="color: green; font-size: 12px;">(sent)</span>';
-        } else if (status.status === 'error') {
-            statusText = ' <span style="color: red; font-size: 12px;">(error)</span>';
-        }
-        
-        var html = '<a href="javascript:void(0)" onclick="pluginHandler.omniossendlogs.sendLogs()" style="cursor: pointer; color: #0066cc; text-decoration: none;">Send logs to server' + statusText + '</a>';
-        
-        // Add button after Apps
-        try {
-            var target = document.getElementById('gen_apps');
-            if (target) {
-                var container = document.createElement('div');
-                container.id = 'gen_send_logs';
-                container.style.marginTop = '4px';
-                container.innerHTML = html;
-                target.parentNode.insertBefore(container, target.nextSibling);
-            }
-        } catch (e) {
-            console.log('[omniossendlogs] Failed to inject UI: ' + e.message);
-        }
-    };
-
-    /**
-     * Handle device refresh (triggered on device page load)
-     */
-    obj.onDeviceRefreshEnd = function () {
-        console.log('[omniossendlogs] Device refresh end, injecting UI');
-        if (typeof pluginHandler !== 'undefined' && pluginHandler.omniossendlogs) {
+        // Update UI if this is the current node
+        if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === msg.data.nodeid) {
             pluginHandler.omniossendlogs.injectGeneral();
         }
+        
+        // Clear status after 10 seconds for success/error
+        if (msg.data.status !== 'running') {
+            setTimeout(function() {
+                var currentStatus = pluginHandler.omniossendlogs.exportStatus[msg.data.nodeid];
+                if (currentStatus && currentStatus.time && (Date.now() - currentStatus.time) >= 9000) {
+                    delete pluginHandler.omniossendlogs.exportStatus[msg.data.nodeid];
+                    if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === msg.data.nodeid) {
+                        pluginHandler.omniossendlogs.injectGeneral();
+                    }
+                }
+            }, 10000);
+        }
     };
 
+    obj.onDeviceRefreshEnd = function () {
+        console.log('[omniossendlogs] onDeviceRefreshEnd called, currentNode:', 
+            (typeof currentNode !== 'undefined' && currentNode) ? currentNode._id : 'undefined');
+        if (typeof meshserver === 'undefined') {
+            console.log('[omniossendlogs] meshserver is undefined');
+            return;
+        }
+        pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
+        pluginHandler.omniossendlogs.injectGeneral();
+    };
+
+    // --- admin panel stub (not used) ---
+    obj.handleAdminReq = function (req, res, user) { res.sendStatus(401); };
+    obj.handleAdminPostReq = function (req, res, user) { res.sendStatus(401); };
+    
     return obj;
 };
