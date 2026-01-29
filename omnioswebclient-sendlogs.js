@@ -99,7 +99,8 @@ module.exports.omniossendlogs = function (parent) {
         }
         
         var nodeid = currentNode._id;
-        var isInProgress = obj.sendInProgress[nodeid] || false;
+        // Defensive check: ensure obj.sendInProgress exists
+        var isInProgress = (obj.sendInProgress && obj.sendInProgress[nodeid]) || false;
         
         // Check if element already exists
         var existingButton = document.getElementById('gen_send_logs_button');
