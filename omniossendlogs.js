@@ -4,66 +4,175 @@
 
 "use strict";
 
-module.exports.omniosendlogs = function (parent) {
+module.exports.omniossendlogs = function (parent) {
     var obj = {};
     obj.parent = parent;
     obj.meshServer = parent.parent;
     obj.debug = obj.meshServer.debug;
+    obj.pendingSend = {}; // nodeid => [sessionIds]
+    obj.inflightSend = {}; // nodeid => boolean
+    obj.sendStatus = {}; // nodeid => { status, timestamp, result }
+
     obj.exports = [
-        'injectGeneral',
+        'onDeviceRefreshEnd',
         'requestSendLogs',
-        'sendLogsData'
+        'sendLogsData',
+        'injectGeneral'
     ];
 
     /**
-     * Inject UI into General tab (called from web client hook)
+     * Send message to WebSocket session
      */
-    obj.injectGeneral = function () {
-        console.log('[omniosendlogs] injectGeneral hook called');
+    obj.sendToSession = function (sessionid, myparent, msg, grandparent) {
+        if (sessionid && grandparent && grandparent.wssessions2 && grandparent.wssessions2[sessionid]) {
+            try { grandparent.wssessions2[sessionid].send(JSON.stringify(msg)); return; } catch (e) { }
+        }
+        if (myparent && myparent.ws) {
+            try { myparent.ws.send(JSON.stringify(msg)); } catch (e) { }
+        }
     };
 
     /**
-     * Request send logs (called from web client)
+     * Queue session waiting for send response
      */
-    obj.requestSendLogs = function (nodeid, sessionid) {
-        console.log('[omniosendlogs] requestSendLogs for node: ' + nodeid);
-        
-        if (!nodeid) return;
-        
-        // Send command to agent
-        obj.meshServer.SendCommand({
-            nodeid: nodeid,
-            type: 'plugin',
-            plugin: 'omniosendlogs',
-            pluginaction: 'sendLogs'
+    obj.queueSession = function (nodeid, sessionid) {
+        if (!nodeid || !sessionid) return;
+        if (!obj.pendingSend[nodeid]) obj.pendingSend[nodeid] = [];
+        if (obj.pendingSend[nodeid].indexOf(sessionid) === -1) obj.pendingSend[nodeid].push(sessionid);
+    };
+
+    /**
+     * Flush pending sessions with send data
+     */
+    obj.flushPending = function (nodeid, msg) {
+        if (!obj.pendingSend[nodeid] || obj.pendingSend[nodeid].length === 0) return;
+        var sessions = obj.pendingSend[nodeid];
+        delete obj.pendingSend[nodeid];
+        sessions.forEach(function (sid) {
+            obj.sendToSession(sid, null, msg, obj.meshServer);
         });
     };
 
     /**
-     * Handle response from agent
+     * Send send logs request to agent
+     */
+    obj.sendAgentCommand = function (nodeid) {
+        if (!nodeid) return;
+        obj.inflightSend[nodeid] = true;
+        
+        console.log('[omniossendlogs] Sending command to agent for node: ' + nodeid);
+        
+        // Send to agent via dispatcher
+        obj.meshServer.SendCommand({
+            nodeid: nodeid,
+            type: 'plugin',
+            pluginaction: 'sendLogs',
+            plugin: 'omniossendlogs'
+        });
+        
+        obj.sendStatus[nodeid] = { status: 'in_progress', timestamp: Date.now() };
+    };
+
+    /**
+     * Handle send response from agent
      */
     obj.sendLogsData = function (state, msg) {
-        if (!msg || !msg.sessionid) {
-            console.log('[omniosendlogs] sendLogsData: invalid message');
+        if (!msg || !msg.nodeid) {
+            console.log('[omniossendlogs] sendLogsData: invalid message');
             return;
         }
         
-        console.log('[omniosendlogs] sendLogsData received: success=' + (msg.success ? 'true' : 'false'));
+        var nodeid = msg.nodeid;
+        obj.inflightSend[nodeid] = false;
         
-        // Forward response to web client
+        // Store status
+        obj.sendStatus[nodeid] = {
+            status: msg.success ? 'success' : 'error',
+            timestamp: Date.now(),
+            result: msg.result || (msg.success ? 'Logs sent successfully' : 'Send failed'),
+            error: msg.error || null
+        };
+        
+        console.log('[omniossendlogs] sendLogsData for node ' + nodeid + ': ' + (msg.success ? 'success' : 'failed'));
+        
+        // Notify all waiting sessions
+        obj.flushPending(nodeid, {
+            action: 'plugin',
+            plugin: 'omniossendlogs',
+            pluginaction: 'sendLogsData',
+            nodeid: nodeid,
+            success: msg.success,
+            result: msg.result,
+            error: msg.error
+        });
+    };
+
+    /**
+     * Request send (called from UI)
+     */
+    obj.requestSendLogs = function (nodeid, sessionid) {
+        if (!nodeid) return;
+        
+        console.log('[omniossendlogs] requestSendLogs for node: ' + nodeid);
+        
+        if (obj.inflightSend[nodeid]) {
+            obj.queueSession(nodeid, sessionid);
+            console.log('[omniossendlogs] Send already in progress for ' + nodeid + ', queuing session');
+            return;
+        }
+        
+        obj.queueSession(nodeid, sessionid);
+        obj.sendAgentCommand(nodeid);
+    };
+
+    /**
+     * Inject UI button into General tab
+     */
+    obj.injectGeneral = function () {
+        if (typeof currentNode === 'undefined') {
+            console.log('[omniossendlogs] currentNode is undefined');
+            return;
+        }
+        
+        // Defensive check to prevent crash if obj.sendStatus is undefined
+        if (!obj.sendStatus) obj.sendStatus = {};
+
+        var nodeid = currentNode._id;
+        var status = obj.sendStatus[nodeid] || {};
+        var statusText = '';
+        
+        if (status.status === 'in_progress') {
+            statusText = ' <span style="color: orange; font-size: 12px;">(sending...)</span>';
+        } else if (status.status === 'success') {
+            statusText = ' <span style="color: green; font-size: 12px;">(sent)</span>';
+        } else if (status.status === 'error') {
+            statusText = ' <span style="color: red; font-size: 12px;">(error)</span>';
+        }
+        
+        var html = '<a href="javascript:void(0)" onclick="pluginHandler.omniossendlogs.sendLogs()" style="cursor: pointer; color: #0066cc; text-decoration: none;">Send logs to server' + statusText + '</a>';
+        
+        // Add button after Apps
         try {
-            if (obj.meshServer && obj.meshServer.wssessions2 && obj.meshServer.wssessions2[msg.sessionid]) {
-                obj.meshServer.wssessions2[msg.sessionid].send(JSON.stringify({
-                    action: 'plugin',
-                    plugin: 'omniosendlogs',
-                    pluginaction: 'sendLogsData',
-                    success: msg.success,
-                    result: msg.result,
-                    error: msg.error
-                }));
+            var target = document.getElementById('gen_apps');
+            if (target) {
+                var container = document.createElement('div');
+                container.id = 'gen_send_logs';
+                container.style.marginTop = '4px';
+                container.innerHTML = html;
+                target.parentNode.insertBefore(container, target.nextSibling);
             }
         } catch (e) {
-            console.log('[omniosendlogs] Failed to send response to client: ' + e.message);
+            console.log('[omniossendlogs] Failed to inject UI: ' + e.message);
+        }
+    };
+
+    /**
+     * Handle device refresh (triggered on device page load)
+     */
+    obj.onDeviceRefreshEnd = function () {
+        console.log('[omniossendlogs] Device refresh end, injecting UI');
+        if (typeof pluginHandler !== 'undefined' && pluginHandler.omniossendlogs) {
+            pluginHandler.omniossendlogs.injectGeneral();
         }
     };
 
