@@ -28,27 +28,34 @@ module.exports.omniosendlogs = function (parent) {
             var nodeid = currentNode._id;
             console.log('[omniosendlogs] injectGeneral for node: ' + nodeid);
             
-            // Look for the Apps display element
-            var appsElement = document.querySelector('[data-type="apps"]');
-            if (!appsElement) {
-                // Alternative: look for element containing "Apps:"
-                var allElements = document.querySelectorAll('*');
-                for (var i = 0; i < allElements.length; i++) {
-                    if (allElements[i].textContent.trim().startsWith('Apps:')) {
-                        appsElement = allElements[i];
-                        break;
-                    }
-                }
-            }
-            
-            if (!appsElement || !appsElement.parentNode) {
-                console.log('[omniosendlogs] Apps element not found in DOM');
-                return;
-            }
-            
             // Check if we already injected the button
             if (document.getElementById('omniosendlogs_button')) {
                 console.log('[omniosendlogs] Button already injected');
+                return;
+            }
+            
+            // Look for Apps element - could be in various places
+            var appsElement = null;
+            
+            // Try to find by looking for text content
+            var allElements = document.querySelectorAll('*');
+            for (var i = 0; i < allElements.length; i++) {
+                var el = allElements[i];
+                // Look for Apps: label or similar
+                if (el.childNodes.length > 0) {
+                    for (var j = 0; j < el.childNodes.length; j++) {
+                        var node = el.childNodes[j];
+                        if (node.nodeType === 3 && node.textContent.trim().startsWith('Apps')) { // text node
+                            appsElement = el;
+                            break;
+                        }
+                    }
+                }
+                if (appsElement) break;
+            }
+            
+            if (!appsElement) {
+                console.log('[omniosendlogs] Apps element not found');
                 return;
             }
             
@@ -61,6 +68,7 @@ module.exports.omniosendlogs = function (parent) {
             link.style.textDecoration = 'none';
             link.style.cursor = 'pointer';
             link.style.marginLeft = '8px';
+            link.style.display = 'inline-block';
             
             // Add hover effect
             link.onmouseover = function() { this.style.textDecoration = 'underline'; };
@@ -72,16 +80,20 @@ module.exports.omniosendlogs = function (parent) {
                 obj.requestSendLogs();
             };
             
-            // Insert link after Apps element (in same line or next line)
+            // Create container for the link
             var container = document.createElement('span');
-            container.style.marginLeft = '8px';
+            container.id = 'omniosendlogs_container';
             container.appendChild(link);
             
-            // Try to insert in the same parent element
-            if (appsElement.nextSibling) {
-                appsElement.parentNode.insertBefore(container, appsElement.nextSibling);
-            } else {
-                appsElement.parentNode.appendChild(container);
+            // Insert right after Apps element
+            var parent = appsElement.parentNode;
+            if (parent) {
+                // Insert as next sibling
+                if (appsElement.nextSibling) {
+                    parent.insertBefore(container, appsElement.nextSibling);
+                } else {
+                    parent.appendChild(container);
+                }
             }
             
             console.log('[omniosendlogs] UI injected successfully');
@@ -111,6 +123,7 @@ module.exports.omniosendlogs = function (parent) {
                 button.textContent = 'Send logs to server (sending...)';
                 button.style.color = '#ff9900';
                 button.style.pointerEvents = 'none';
+                button.style.opacity = '0.6';
             }
             
             console.log('[omniosendlogs] Requesting send for node: ' + nodeid);
@@ -129,6 +142,7 @@ module.exports.omniosendlogs = function (parent) {
                     button.textContent = 'Send logs to server';
                     button.style.color = '#0066cc';
                     button.style.pointerEvents = 'auto';
+                    button.style.opacity = '1';
                 }
             }
         } catch (e) {
@@ -151,6 +165,7 @@ module.exports.omniosendlogs = function (parent) {
                 button.textContent = 'Send logs to server';
                 button.style.color = '#0066cc';
                 button.style.pointerEvents = 'auto';
+                button.style.opacity = '1';
             }
             
             // Show result to user

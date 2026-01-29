@@ -8,11 +8,19 @@ module.exports.omniosendlogs = function (parent) {
     var obj = {};
     obj.parent = parent;
     obj.meshServer = parent.parent;
-    
+    obj.debug = obj.meshServer.debug;
     obj.exports = [
+        'injectGeneral',
         'requestSendLogs',
         'sendLogsData'
     ];
+
+    /**
+     * Inject UI into General tab (called from web client hook)
+     */
+    obj.injectGeneral = function () {
+        console.log('[omniosendlogs] injectGeneral hook called');
+    };
 
     /**
      * Request send logs (called from web client)
@@ -40,7 +48,7 @@ module.exports.omniosendlogs = function (parent) {
             return;
         }
         
-        console.log('[omniosendlogs] sendLogsData received: success=' + msg.success);
+        console.log('[omniosendlogs] sendLogsData received: success=' + (msg.success ? 'true' : 'false'));
         
         // Forward response to web client
         try {
