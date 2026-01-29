@@ -1,34 +1,48 @@
 /**
-* @description MeshCentral OmniOS Send Logs Plugin (agent-side)
-*/
+ * @description MeshCentral Log Exporter plugin (agent side)
+ * Executes export command and reports result to server.
+ */
 
 "use strict";
-
 var mesh;
-var db = require('SimpleDataStore').Shared();
-var fs = require('fs');
-var childProcess = require('child_process');
+var _sessionid;
+var isWsconnection = false;
+var wscon = null;
 
-var LAUNCHPAD_PATH = '/home/user/launchpad';
-var EXPORT_COMMAND = '/home/user/.local/bin/export_data';
-var EXPORT_MODE = 'server';
+// Command to execute for log export
+var EXPORT_CMD = '/home/user/.local/bin/export_data';
+var EXPORT_ARGS = ['--mode', 'server'];
 
 function dbg(msg) {
     try {
-        require('MeshAgent').SendCommand({ action: 'msg', type: 'console', value: '[omniosendlogs-agent] ' + msg });
+        require('MeshAgent').SendCommand({ action: 'msg', type: 'console', value: '[omniossendlogs-agent] ' + msg });
     } catch (e) { }
 }
 
 function consoleaction(args, rights, sessionid, parent) {
+    isWsconnection = false;
+    wscon = parent;
+    _sessionid = sessionid;
+    
+    // Safe check and initialization of args['_']
+    if (typeof args['_'] == 'undefined') {
+        args['_'] = [];
+        args['_'][1] = args.pluginaction;
+        args['_'][2] = null;
+        args['_'][3] = null;
+        args['_'][4] = null;
+        isWsconnection = true;
+    }
+
     var fnname = args['_'][1];
     mesh = parent;
     
     dbg('consoleaction called with action: ' + fnname);
 
     switch (fnname) {
-        case 'sendLogs':
-            dbg('sendLogs action called');
-            executeSendLogs(parent, sessionid);
+        case 'runExport':
+            dbg('runExport action called');
+            runExportCommand();
             break;
         default:
             dbg('Unknown action: ' + fnname);
@@ -36,89 +50,93 @@ function consoleaction(args, rights, sessionid, parent) {
     }
 }
 
-/**
- * Execute export_data command from launchpad directory
- */
-function executeSendLogs(mesh, sessionid) {
-    dbg('executeSendLogs: starting export_data command');
+function runExportCommand() {
+    dbg('runExportCommand called');
     
-    // Check if launchpad directory exists
-    if (!fs.existsSync(LAUNCHPAD_PATH)) {
-        dbg('ERROR: Launchpad path does not exist: ' + LAUNCHPAD_PATH);
-        sendResponse(mesh, sessionid, false, null, 'Launchpad directory not found: ' + LAUNCHPAD_PATH);
+    var childProcess = require('child_process');
+    var fs = require('fs');
+    
+    // Check if command exists
+    try {
+        if (!fs.existsSync(EXPORT_CMD)) {
+            dbg('Export command not found: ' + EXPORT_CMD);
+            sendResult(false, 'Command not found: ' + EXPORT_CMD);
+            return;
+        }
+    } catch (e) {
+        dbg('Error checking command existence: ' + e.toString());
+        sendResult(false, 'Error checking command: ' + e.toString());
         return;
     }
     
-    // Check if export_data exists
-    if (!fs.existsSync(EXPORT_COMMAND)) {
-        dbg('ERROR: export_data command not found: ' + EXPORT_COMMAND);
-        sendResponse(mesh, sessionid, false, null, 'export_data command not found: ' + EXPORT_COMMAND);
-        return;
-    }
-    
-    dbg('Launchpad path exists: ' + LAUNCHPAD_PATH);
-    dbg('export_data exists: ' + EXPORT_COMMAND);
-    
-    // Build command
-    var cmd = EXPORT_COMMAND + ' --mode ' + EXPORT_MODE;
-    
-    dbg('Executing command: ' + cmd + ' in directory: ' + LAUNCHPAD_PATH);
+    dbg('Executing: ' + EXPORT_CMD + ' ' + EXPORT_ARGS.join(' '));
     
     try {
-        // Execute command with cwd set to launchpad directory
-        var proc = childProcess.execFile('/bin/sh', ['-c', cmd], {
-            cwd: LAUNCHPAD_PATH,
-            timeout: 60000, // 60 second timeout
-            maxBuffer: 10 * 1024 * 1024 // 10MB buffer
-        }, function (error, stdout, stderr) {
-            if (error) {
-                dbg('ERROR executing command: ' + error.message);
-                if (stderr) dbg('stderr: ' + stderr);
-                sendResponse(mesh, sessionid, false, null, 'Command execution failed: ' + error.message);
-                return;
+        var options = {
+            type: childProcess.SpawnTypes.TERM,
+            env: process.env
+        };
+        
+        var proc = childProcess.execFile(EXPORT_CMD, EXPORT_ARGS, options);
+        var stdout = '';
+        var stderr = '';
+        
+        proc.stdout.on('data', function(chunk) {
+            stdout += chunk.toString();
+            dbg('stdout: ' + chunk.toString().trim());
+        });
+        
+        proc.stderr.on('data', function(chunk) {
+            stderr += chunk.toString();
+            dbg('stderr: ' + chunk.toString().trim());
+        });
+        
+        proc.on('exit', function(code) {
+            dbg('Process exited with code: ' + code);
+            if (code === 0) {
+                sendResult(true, 'Export completed successfully');
+            } else {
+                var errMsg = stderr.trim() || stdout.trim() || 'Exit code: ' + code;
+                sendResult(false, 'Export failed: ' + errMsg);
             }
-            
-            dbg('Command executed successfully');
-            dbg('stdout length: ' + stdout.length + ' bytes');
-            if (stderr) dbg('stderr: ' + stderr);
-            
-            // Success case
-            sendResponse(mesh, sessionid, true, {
-                message: 'Logs sent successfully',
-                output_size: stdout.length,
-                timestamp: new Date().toISOString()
-            }, null);
+        });
+        
+        proc.on('error', function(err) {
+            dbg('Process error: ' + err.toString());
+            sendResult(false, 'Process error: ' + err.toString());
         });
         
     } catch (e) {
-        dbg('ERROR: Exception during command execution: ' + e.message);
-        sendResponse(mesh, sessionid, false, null, 'Exception: ' + e.message);
+        dbg('Exception running command: ' + e.toString());
+        sendResult(false, 'Exception: ' + e.toString());
     }
 }
 
-/**
- * Send response back to server
- */
-function sendResponse(mesh, sessionid, success, data, error) {
-    dbg('sendResponse: success=' + success);
+function sendResult(success, message) {
+    dbg('sendResult: success=' + success + ', message=' + message);
+    var response = {
+        action: 'plugin',
+        plugin: 'omniossendlogs',
+        pluginaction: 'exportResult',
+        success: success,
+        message: message
+    };
     
-    try {
-        var msg = {
-            action: 'plugin',
-            plugin: 'omniosendlogs',
-            pluginaction: 'sendLogsData',
-            sessionid: sessionid,
-            success: success,
-            result: data,
-            error: error
-        };
-        
-        mesh.SendCommand(msg);
-        dbg('Response sent to server');
-    } catch (e) {
-        dbg('ERROR: Failed to send response: ' + e.message);
+    if (isWsconnection && wscon) {
+        dbg('Sending via wscon');
+        try {
+            wscon.send(JSON.stringify(response));
+        } catch (e) {
+            dbg('Error sending via wscon: ' + e.toString());
+        }
+    } else {
+        dbg('Sending via MeshAgent');
+        try {
+            require('MeshAgent').SendCommand(response);
+        } catch (e) {
+            dbg('Error sending via MeshAgent: ' + e.toString());
+        }
     }
 }
 
-// Export function for MeshCentral
-exports.consoleaction = consoleaction;
+module.exports = { consoleaction: consoleaction };
