@@ -5,38 +5,21 @@
 "use strict";
 
 var mesh;
-var _sessionid;
-var isWsconnection = false;
-var wscon = null;
 var db = require('SimpleDataStore').Shared();
 var fs = require('fs');
 var childProcess = require('child_process');
 
 var LAUNCHPAD_PATH = '/home/user/launchpad';
-var EXPORT_COMMAND = 'export_data';
+var EXPORT_COMMAND = '/home/user/.local/bin/export_data';
 var EXPORT_MODE = 'server';
 
 function dbg(msg) {
     try {
-        require('MeshAgent').SendCommand({ action: 'msg', type: 'console', value: '[omniossendlogs-agent] ' + msg });
+        require('MeshAgent').SendCommand({ action: 'msg', type: 'console', value: '[omniosendlogs-agent] ' + msg });
     } catch (e) { }
 }
 
 function consoleaction(args, rights, sessionid, parent) {
-    isWsconnection = false;
-    wscon = parent;
-    _sessionid = sessionid;
-    
-    // Safe initialization of args['_']
-    if (typeof args['_'] == 'undefined') {
-        args['_'] = [];
-        args['_'][1] = args.pluginaction;
-        args['_'][2] = null;
-        args['_'][3] = null;
-        args['_'][4] = null;
-        isWsconnection = true;
-    }
-
     var fnname = args['_'][1];
     mesh = parent;
     
@@ -45,7 +28,7 @@ function consoleaction(args, rights, sessionid, parent) {
     switch (fnname) {
         case 'sendLogs':
             dbg('sendLogs action called');
-            executeSendLogs();
+            executeSendLogs(parent, sessionid);
             break;
         default:
             dbg('Unknown action: ' + fnname);
@@ -54,19 +37,27 @@ function consoleaction(args, rights, sessionid, parent) {
 }
 
 /**
- * Execute export_data command
+ * Execute export_data command from launchpad directory
  */
-function executeSendLogs() {
+function executeSendLogs(mesh, sessionid) {
     dbg('executeSendLogs: starting export_data command');
     
     // Check if launchpad directory exists
     if (!fs.existsSync(LAUNCHPAD_PATH)) {
         dbg('ERROR: Launchpad path does not exist: ' + LAUNCHPAD_PATH);
-        sendLogsResponse(false, null, 'Launchpad directory not found: ' + LAUNCHPAD_PATH);
+        sendResponse(mesh, sessionid, false, null, 'Launchpad directory not found: ' + LAUNCHPAD_PATH);
+        return;
+    }
+    
+    // Check if export_data exists
+    if (!fs.existsSync(EXPORT_COMMAND)) {
+        dbg('ERROR: export_data command not found: ' + EXPORT_COMMAND);
+        sendResponse(mesh, sessionid, false, null, 'export_data command not found: ' + EXPORT_COMMAND);
         return;
     }
     
     dbg('Launchpad path exists: ' + LAUNCHPAD_PATH);
+    dbg('export_data exists: ' + EXPORT_COMMAND);
     
     // Build command
     var cmd = EXPORT_COMMAND + ' --mode ' + EXPORT_MODE;
@@ -82,17 +73,17 @@ function executeSendLogs() {
         }, function (error, stdout, stderr) {
             if (error) {
                 dbg('ERROR executing command: ' + error.message);
-                dbg('stderr: ' + stderr);
-                sendLogsResponse(false, null, 'Command execution failed: ' + error.message);
+                if (stderr) dbg('stderr: ' + stderr);
+                sendResponse(mesh, sessionid, false, null, 'Command execution failed: ' + error.message);
                 return;
             }
             
             dbg('Command executed successfully');
             dbg('stdout length: ' + stdout.length + ' bytes');
-            dbg('stderr: ' + stderr);
+            if (stderr) dbg('stderr: ' + stderr);
             
             // Success case
-            sendLogsResponse(true, {
+            sendResponse(mesh, sessionid, true, {
                 message: 'Logs sent successfully',
                 output_size: stdout.length,
                 timestamp: new Date().toISOString()
@@ -101,35 +92,29 @@ function executeSendLogs() {
         
     } catch (e) {
         dbg('ERROR: Exception during command execution: ' + e.message);
-        sendLogsResponse(false, null, 'Exception: ' + e.message);
+        sendResponse(mesh, sessionid, false, null, 'Exception: ' + e.message);
     }
 }
 
 /**
- * Send export response back to server
+ * Send response back to server
  */
-function sendLogsResponse(success, data, error) {
-    dbg('sendLogsResponse: success=' + success);
+function sendResponse(mesh, sessionid, success, data, error) {
+    dbg('sendResponse: success=' + success);
     
     try {
         var msg = {
             action: 'plugin',
-            plugin: 'omniossendlogs',
+            plugin: 'omniosendlogs',
             pluginaction: 'sendLogsData',
-            sessionid: _sessionid,
-            tag: 'console',
+            sessionid: sessionid,
             success: success,
             result: data,
             error: error
         };
         
-        if (isWsconnection) {
-            wscon.send(JSON.stringify(msg));
-            dbg('Response sent via WebSocket');
-        } else {
-            mesh.SendCommand(msg);
-            dbg('Response sent via mesh');
-        }
+        mesh.SendCommand(msg);
+        dbg('Response sent to server');
     } catch (e) {
         dbg('ERROR: Failed to send response: ' + e.message);
     }
