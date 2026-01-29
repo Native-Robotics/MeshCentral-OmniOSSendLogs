@@ -23,34 +23,44 @@ module.exports.omniossendlogs = function (parent) {
     obj.sendLogs = function () {
         console.log('[omniossendlogs] sendLogs button clicked');
 
-        if (typeof currentNode === 'undefined') {
-            console.log('[omniossendlogs] currentNode is undefined');
-            alert('No device selected');
-            return;
-        }
+        try {
+            if (typeof currentNode === 'undefined' || !currentNode || !currentNode._id) {
+                console.log('[omniossendlogs] currentNode is undefined or invalid');
+                alert('No device selected');
+                return;
+            }
 
-        var nodeid = currentNode._id;
+            var nodeid = currentNode._id;
 
-        if (obj.sendInProgress[nodeid]) {
-            console.log('[omniossendlogs] Send already in progress');
-            alert('Send is already in progress');
-            return;
-        }
+            if (obj.sendInProgress[nodeid]) {
+                console.log('[omniossendlogs] Send already in progress');
+                alert('Send is already in progress');
+                return;
+            }
 
-        obj.sendInProgress[nodeid] = true;
-        console.log('[omniossendlogs] Requesting send for node: ' + nodeid);
+            obj.sendInProgress[nodeid] = true;
+            obj.updateButtonState(nodeid);
 
-        // Send request to server
-        if (typeof meshserver !== 'undefined') {
-            meshserver.send({
-                action: 'plugin',
-                plugin: 'omniossendlogs',
-                pluginaction: 'requestSendLogs',
-                nodeid: nodeid
-            });
-        } else {
-            console.log('[omniossendlogs] meshserver undefined');
+            console.log('[omniossendlogs] Requesting send for node: ' + nodeid);
+
+            // Send request to server
+            if (typeof meshserver !== 'undefined') {
+                meshserver.send({
+                    action: 'plugin',
+                    plugin: 'omniossendlogs',
+                    pluginaction: 'requestSendLogs',
+                    nodeid: nodeid
+                });
+            } else {
+                console.log('[omniossendlogs] meshserver undefined');
+                obj.sendInProgress[nodeid] = false;
+                obj.updateButtonState(nodeid);
+                alert('Server connection error');
+            }
+        } catch (e) {
+            console.log('[omniossendlogs] Error in sendLogs: ' + e.message);
             obj.sendInProgress[nodeid] = false;
+            alert('Error: ' + e.message);
         }
     };
 
@@ -60,32 +70,63 @@ module.exports.omniossendlogs = function (parent) {
     obj.sendLogsData = function (state, msg) {
         console.log('[omniossendlogs] sendLogsData received:', msg);
 
-        if (!msg || !msg.nodeid) {
-            console.log('[omniossendlogs] Invalid message structure');
-            return;
+        try {
+            if (!msg || !msg.nodeid) {
+                console.log('[omniossendlogs] Invalid message structure');
+                return;
+            }
+
+            var nodeid = msg.nodeid;
+            obj.sendInProgress[nodeid] = false;
+            obj.updateButtonState(nodeid);
+
+            // Show result to user
+            if (msg.success) {
+                console.log('[omniossendlogs] Send successful');
+                var resultText = 'Logs sent successfully';
+                if (msg.result && msg.result.message) {
+                    resultText = msg.result.message;
+                }
+                if (msg.result && msg.result.timestamp) {
+                    resultText += '\n\nTime: ' + msg.result.timestamp;
+                }
+                alert(resultText);
+            } else {
+                console.log('[omniossendlogs] Send failed');
+                var errorMsg = msg.error || 'Unknown error';
+                alert('Failed to send logs:\n\n' + errorMsg);
+            }
+        } catch (e) {
+            console.log('[omniossendlogs] Error in sendLogsData: ' + e.message);
         }
+    };
 
-        var nodeid = msg.nodeid;
-        obj.sendInProgress[nodeid] = false;
-
-        // Update UI
-        obj.injectGeneral();
-
-        // Show result to user
-        if (msg.success) {
-            console.log('[omniossendlogs] Send successful');
-            var resultText = 'Logs sent successfully';
-            if (msg.result && msg.result.message) {
-                resultText = msg.result.message;
+    /**
+     * Update button visual state
+     */
+    obj.updateButtonState = function (nodeid) {
+        try {
+            var button = document.getElementById('gen_send_logs_button');
+            if (!button) {
+                console.log('[omniossendlogs] Button not found');
+                return;
             }
-            if (msg.result && msg.result.timestamp) {
-                resultText += '\nTime: ' + msg.result.timestamp;
+
+            var isInProgress = (obj.sendInProgress && obj.sendInProgress[nodeid]) || false;
+
+            if (isInProgress) {
+                button.textContent = 'Send logs to server (sending...)';
+                button.style.color = '#ff9900';
+                button.style.pointerEvents = 'none';
+                button.style.opacity = '0.6';
+            } else {
+                button.textContent = 'Send logs to server';
+                button.style.color = '#0066cc';
+                button.style.pointerEvents = 'auto';
+                button.style.opacity = '1';
             }
-            alert(resultText);
-        } else {
-            console.log('[omniossendlogs] Send failed');
-            var errorMsg = msg.error || 'Unknown error';
-            alert('Failed to send logs:\n' + errorMsg);
+        } catch (e) {
+            console.log('[omniossendlogs] Error updating button: ' + e.message);
         }
     };
 
@@ -94,9 +135,11 @@ module.exports.omniossendlogs = function (parent) {
      */
     obj.injectGeneral = function () {
         try {
-            // Defensive checks for currentNode and its properties
+            console.log('[omniossendlogs] injectGeneral called');
+
+            // Defensive checks
             if (typeof currentNode === 'undefined' || !currentNode) {
-                console.log('[omniossendlogs] currentNode is undefined');
+                console.log('[omniossendlogs] currentNode is undefined, waiting...');
                 return;
             }
 
@@ -108,42 +151,34 @@ module.exports.omniossendlogs = function (parent) {
             var nodeid = currentNode._id;
             console.log('[omniossendlogs] injectGeneral for node: ' + nodeid);
 
-            // Defensive check: ensure obj.sendInProgress exists
-            var isInProgress = (obj.sendInProgress && obj.sendInProgress[nodeid]) || false;
-
-            // Check if element already exists
+            // Check if button already exists
             var existingButton = document.getElementById('gen_send_logs_button');
             if (existingButton) {
-                // Update existing button
-                if (isInProgress) {
-                    existingButton.textContent = 'Send logs to server (sending...)';
-                    existingButton.style.color = '#ff9900';
-                    existingButton.style.pointerEvents = 'none';
-                    existingButton.style.opacity = '0.6';
-                } else {
-                    existingButton.textContent = 'Send logs to server';
-                    existingButton.style.color = '#0066cc';
-                    existingButton.style.pointerEvents = 'auto';
-                    existingButton.style.opacity = '1';
-                }
+                console.log('[omniossendlogs] Button already exists');
                 return;
             }
 
-            // Find the target element to insert after
+            // Find the target element - look for gen_apps
             var appsDiv = document.getElementById('gen_apps');
             if (!appsDiv) {
-                console.log('[omniossendlogs] gen_apps element not found, skipping injection');
+                console.log('[omniossendlogs] gen_apps element not found');
+                // Try alternative: look for any element with text "Apps"
+                var allDivs = document.querySelectorAll('div');
+                for (var i = 0; i < allDivs.length; i++) {
+                    if (allDivs[i].textContent.indexOf('Apps') === 0 && allDivs[i].textContent.length < 20) {
+                        appsDiv = allDivs[i];
+                        console.log('[omniossendlogs] Found Apps element by text search');
+                        break;
+                    }
+                }
+            }
+
+            if (!appsDiv) {
+                console.log('[omniossendlogs] Could not find gen_apps or Apps element');
                 return;
             }
 
-            // Check if container already exists (avoid duplicates)
-            var existingContainer = document.getElementById('gen_send_logs_container');
-            if (existingContainer) {
-                console.log('[omniossendlogs] Container already exists, updating button only');
-                return;
-            }
-
-            // Create new button container
+            // Create button container
             var container = document.createElement('div');
             container.id = 'gen_send_logs_container';
             container.style.marginTop = '4px';
@@ -157,22 +192,29 @@ module.exports.omniossendlogs = function (parent) {
             button.style.textDecoration = 'none';
             button.style.display = 'inline-block';
             button.style.padding = '2px 0';
+
+            button.onmouseenter = function () {
+                this.style.textDecoration = 'underline';
+            };
+            button.onmouseleave = function () {
+                this.style.textDecoration = 'none';
+            };
+
             button.onclick = function (e) {
                 e.preventDefault();
-                if (typeof pluginHandler !== 'undefined' && pluginHandler.omniossendlogs) {
-                    pluginHandler.omniossendlogs.sendLogs();
-                }
+                obj.sendLogs();
             };
 
             container.appendChild(button);
 
-            // Safely insert after appsDiv
-            if (appsDiv.parentNode) {
+            // Insert after appsDiv
+            if (appsDiv.nextSibling) {
                 appsDiv.parentNode.insertBefore(container, appsDiv.nextSibling);
-                console.log('[omniossendlogs] UI injected successfully');
             } else {
-                console.log('[omniossendlogs] appsDiv has no parent node');
+                appsDiv.parentNode.appendChild(container);
             }
+
+            console.log('[omniossendlogs] UI injected successfully');
 
         } catch (e) {
             console.log('[omniossendlogs] Failed to inject UI: ' + e.message);
@@ -181,13 +223,29 @@ module.exports.omniossendlogs = function (parent) {
     };
 
     /**
-     * Called when device page is refreshed
+     * Called when device page is refreshed or loaded
      */
     obj.onDeviceRefreshEnd = function () {
         console.log('[omniossendlogs] onDeviceRefreshEnd called');
-        if (typeof pluginHandler !== 'undefined' && pluginHandler.omniossendlogs) {
-            pluginHandler.omniossendlogs.injectGeneral();
-        }
+
+        // Try to inject immediately
+        obj.injectGeneral();
+
+        // If injection failed, retry after a short delay (DOM might not be ready)
+        setTimeout(function () {
+            if (!document.getElementById('gen_send_logs_button')) {
+                console.log('[omniossendlogs] Retrying injection after delay');
+                obj.injectGeneral();
+            }
+        }, 500);
+
+        // Additional retry after longer delay
+        setTimeout(function () {
+            if (!document.getElementById('gen_send_logs_button')) {
+                console.log('[omniossendlogs] Final retry of injection');
+                obj.injectGeneral();
+            }
+        }, 1500);
     };
 
     return obj;
