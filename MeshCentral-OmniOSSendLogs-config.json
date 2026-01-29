@@ -1,0 +1,18 @@
+{
+  "name": "OmniOS Send Logs",
+  "shortName": "omniossendlogs",
+  "version": "1.0.0",
+  "author": "wwwfyl",
+  "description": "Send OmniOS's and apps logs to server via export_data command.",
+  "hasAdminPanel": false,
+  "meshCentralCompat": ">=1.1.35",
+  "homepage": "https://github.com/Native-Robotics/MeshCentral-OmniOSSendLogs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Native-Robotics/MeshCentral-OmniOSSendLogs.git"
+  },
+  "downloadUrl": "https://github.com/Native-Robotics/MeshCentral-OmniOSSendLogs/archive/refs/heads/main.zip",
+  "configUrl": "https://raw.githubusercontent.com/Native-Robotics/MeshCentral-OmniOSSendLogs/main/config.json",
+  "changelogUrl": "https://raw.githubusercontent.com/Native-Robotics/MeshCentral-OmniOSSendLogs/main/CHANGELOG.md",
+  "versionHistoryUrl": "https://api.github.com/repos/Native-Robotics/MeshCentral-OmniOSSendLogs/tags"
+}
