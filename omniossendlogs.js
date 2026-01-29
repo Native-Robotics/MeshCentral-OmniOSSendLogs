@@ -137,6 +137,9 @@ module.exports.omniossendlogs = function (parent) {
             return;
         }
         
+        // Defensive check to prevent crash if obj.sendStatus is undefined
+        if (!obj.sendStatus) obj.sendStatus = {};
+
         var nodeid = currentNode._id;
         var status = obj.sendStatus[nodeid] || {};
         var statusText = '';

@@ -1,7 +1,7 @@
 {
   "name": "OmniOS Send Logs",
   "shortName": "omniossendlogs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Native Robotics Dev",
   "description": "Send OmniOS's and apps logs to server via export_data command.",
   "hasAdminPanel": false,
