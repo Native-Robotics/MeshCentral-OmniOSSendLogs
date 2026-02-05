@@ -110,7 +110,8 @@ function runExportCommand() {
         };
 
         // Direct python3 call with script and arguments
-        var proc = childProcess.execFile(PYTHON_BIN, [EXPORT_SCRIPT, '--mode', 'server'], options);
+        // Use '--' to separate python options from script arguments
+        var proc = childProcess.execFile(PYTHON_BIN, [EXPORT_SCRIPT, '--', '--mode', 'server'], options);
         var stdout = '';
         var stderr = '';
 
