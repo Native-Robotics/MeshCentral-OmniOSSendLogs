@@ -109,9 +109,10 @@ function runExportCommand() {
             cwd: EXPORT_CWD  // Set working directory
         };
 
-        // Direct python3 call with script and arguments
-        // Use '--' to separate python options from script arguments
-        var proc = childProcess.execFile(PYTHON_BIN, [EXPORT_SCRIPT, '--', '--mode', 'server'], options);
+        // Use exec with full command string - MeshAgent's execFile has issues with arguments
+        var fullCmd = PYTHON_BIN + ' "' + EXPORT_SCRIPT + '" --mode server';
+        dbg('Full command: ' + fullCmd);
+        var proc = childProcess.exec(fullCmd, options);
         var stdout = '';
         var stderr = '';
 
