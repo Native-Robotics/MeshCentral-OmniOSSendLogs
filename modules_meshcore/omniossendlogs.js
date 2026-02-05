@@ -10,7 +10,8 @@ var isWsconnection = false;
 var wscon = null;
 
 // Command to execute for log export
-var EXPORT_CMD = '/home/user/.local/bin/export_data --mode server';
+var EXPORT_BIN = '/home/user/.local/bin/export_data';  // Path to executable (for existence check)
+var EXPORT_CMD = EXPORT_BIN + ' --mode server';  // Full command with arguments
 var EXPORT_CWD = '/home/user/launchpad';  // Working directory for export script
 
 function dbg(msg) {
@@ -58,9 +59,9 @@ function runExportCommand() {
 
     // Check if command exists
     try {
-        if (!fs.existsSync(EXPORT_CMD)) {
-            dbg('Export command not found: ' + EXPORT_CMD);
-            sendResult(false, 'Command not found: ' + EXPORT_CMD);
+        if (!fs.existsSync(EXPORT_BIN)) {
+            dbg('Export command not found: ' + EXPORT_BIN);
+            sendResult(false, 'Command not found: ' + EXPORT_BIN);
             return;
         }
     } catch (e) {
