@@ -109,10 +109,10 @@ function runExportCommand() {
             cwd: EXPORT_CWD  // Set working directory
         };
 
-        // Use exec with full command string - MeshAgent's execFile has issues with arguments
-        var fullCmd = PYTHON_BIN + ' "' + EXPORT_SCRIPT + '" --mode server';
+        // Use /bin/sh -c to run command - MeshAgent only supports execFile
+        var fullCmd = PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server';
         dbg('Full command: ' + fullCmd);
-        var proc = childProcess.exec(fullCmd, options);
+        var proc = childProcess.execFile('/bin/sh', ['-c', fullCmd], options);
         var stdout = '';
         var stderr = '';
 
