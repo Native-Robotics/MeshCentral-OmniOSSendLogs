@@ -10,8 +10,7 @@ var isWsconnection = false;
 var wscon = null;
 
 // Command to execute for log export
-var EXPORT_CMD = '/home/user/.local/bin/export_data';
-var EXPORT_ARGS = ['--mode=server'];  // Use = format for argument
+var EXPORT_CMD = '/home/user/.local/bin/export_data --mode server';
 var EXPORT_CWD = '/home/user/launchpad';  // Working directory for export script
 
 function dbg(msg) {
@@ -70,7 +69,7 @@ function runExportCommand() {
         return;
     }
 
-    dbg('Executing: ' + EXPORT_CMD + ' ' + EXPORT_ARGS.join(' ') + ' (cwd: ' + EXPORT_CWD + ')');
+    dbg('Executing: ' + EXPORT_CMD + ' (cwd: ' + EXPORT_CWD + ')');
 
     try {
         // Create custom environment with HOME set to /home/user
@@ -81,12 +80,12 @@ function runExportCommand() {
         customEnv['HOME'] = '/home/user';
 
         var options = {
-            type: childProcess.SpawnTypes.TERM,
             env: customEnv,  // Use custom environment with HOME override
             cwd: EXPORT_CWD  // Set working directory
         };
 
-        var proc = childProcess.execFile(EXPORT_CMD, EXPORT_ARGS, options);
+        // Use execFile with bash -c to ensure proper argument handling
+        var proc = childProcess.execFile('/bin/bash', ['-c', EXPORT_CMD], options);
         var stdout = '';
         var stderr = '';
 
