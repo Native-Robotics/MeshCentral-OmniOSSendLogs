@@ -11,7 +11,7 @@ var wscon = null;
 
 // Command to execute for log export
 var EXPORT_CMD = '/home/user/.local/bin/export_data';
-var EXPORT_ARGS = ['--mode', 'server'];
+var EXPORT_ARGS = ['--mode=server'];  // Use = format for argument
 var EXPORT_CWD = '/home/user/launchpad';  // Working directory for export script
 
 function dbg(msg) {
