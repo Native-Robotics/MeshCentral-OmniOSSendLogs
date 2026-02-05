@@ -82,7 +82,9 @@ function runExportCommand() {
 
         // Read SERIAL from personal_config.sh
         try {
-            var configContent = fs.readFileSync('/home/user/keys/personal_config.sh', 'utf8');
+            var configBuffer = fs.readFileSync('/home/user/keys/personal_config.sh');
+            // Convert buffer to string (MeshAgent returns Uint8Array)
+            var configContent = (typeof configBuffer === 'string') ? configBuffer : String.fromCharCode.apply(null, configBuffer);
             var serialMatch = configContent.match(/SERIAL=(\S+)/);
             if (serialMatch && serialMatch[1]) {
                 customEnv['SERIAL'] = serialMatch[1];
@@ -96,12 +98,11 @@ function runExportCommand() {
 
         var options = {
             env: customEnv,  // Use custom environment with HOME override
-            cwd: EXPORT_CWD, // Set working directory
-            shell: true      // Execute through shell
+            cwd: EXPORT_CWD  // Set working directory
         };
 
-        // Use execFile with shell option
-        var proc = childProcess.execFile(EXPORT_BIN, ['--mode', 'server'], options);
+        // Use spawn with shell to properly handle arguments
+        var proc = childProcess.spawn(EXPORT_BIN, ['--mode', 'server'], options);
         var stdout = '';
         var stderr = '';
 
