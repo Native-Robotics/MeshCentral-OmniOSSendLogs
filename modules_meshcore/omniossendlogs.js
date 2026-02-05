@@ -9,9 +9,9 @@ var _sessionid;
 var isWsconnection = false;
 var wscon = null;
 
-// Command to execute for log export
-var EXPORT_BIN = '/home/user/.local/bin/export_data';  // Path to executable (for existence check)
-var EXPORT_CMD = EXPORT_BIN + ' --mode server';  // Full command with arguments
+// Command to execute for log export - direct python call
+var PYTHON_BIN = '/usr/bin/python3';
+var EXPORT_SCRIPT = '/home/user/launchpad/pages/data/export_data.py';
 var EXPORT_CWD = '/home/user/launchpad';  // Working directory for export script
 
 function dbg(msg) {
@@ -57,20 +57,20 @@ function runExportCommand() {
     var childProcess = require('child_process');
     var fs = require('fs');
 
-    // Check if command exists
+    // Check if python script exists
     try {
-        if (!fs.existsSync(EXPORT_BIN)) {
-            dbg('Export command not found: ' + EXPORT_BIN);
-            sendResult(false, 'Command not found: ' + EXPORT_BIN);
+        if (!fs.existsSync(EXPORT_SCRIPT)) {
+            dbg('Export script not found: ' + EXPORT_SCRIPT);
+            sendResult(false, 'Script not found: ' + EXPORT_SCRIPT);
             return;
         }
     } catch (e) {
-        dbg('Error checking command existence: ' + e.toString());
-        sendResult(false, 'Error checking command: ' + e.toString());
+        dbg('Error checking script existence: ' + e.toString());
+        sendResult(false, 'Error checking script: ' + e.toString());
         return;
     }
 
-    dbg('Executing: ' + EXPORT_CMD + ' (cwd: ' + EXPORT_CWD + ')');
+    dbg('Executing: ' + PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server (cwd: ' + EXPORT_CWD + ')');
 
     try {
         // Create custom environment with HOME set to /home/user
@@ -96,13 +96,21 @@ function runExportCommand() {
             dbg('Warning: Could not read SERIAL from personal_config.sh: ' + e.toString());
         }
 
+        // Set PYTHONPATH to include libs directory
+        var pythonPath = '/home/user/launchpad/libs';
+        if (customEnv['PYTHONPATH']) {
+            pythonPath = pythonPath + ':' + customEnv['PYTHONPATH'];
+        }
+        customEnv['PYTHONPATH'] = pythonPath;
+        dbg('PYTHONPATH set to: ' + pythonPath);
+
         var options = {
-            env: customEnv,  // Use custom environment with HOME override
+            env: customEnv,  // Use custom environment with HOME, SERIAL, PYTHONPATH
             cwd: EXPORT_CWD  // Set working directory
         };
 
-        // Use spawn with shell to properly handle arguments
-        var proc = childProcess.spawn(EXPORT_BIN, ['--mode', 'server'], options);
+        // Direct python3 call with script and arguments
+        var proc = childProcess.execFile(PYTHON_BIN, [EXPORT_SCRIPT, '--mode', 'server'], options);
         var stdout = '';
         var stderr = '';
 
