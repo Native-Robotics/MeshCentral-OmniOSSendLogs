@@ -73,9 +73,16 @@ function runExportCommand() {
     dbg('Executing: ' + EXPORT_CMD + ' ' + EXPORT_ARGS.join(' ') + ' (cwd: ' + EXPORT_CWD + ')');
 
     try {
+        // Create custom environment with HOME set to /home/user
+        var customEnv = {};
+        for (var key in process.env) {
+            customEnv[key] = process.env[key];
+        }
+        customEnv['HOME'] = '/home/user';
+
         var options = {
             type: childProcess.SpawnTypes.TERM,
-            env: process.env,
+            env: customEnv,  // Use custom environment with HOME override
             cwd: EXPORT_CWD  // Set working directory
         };
 
