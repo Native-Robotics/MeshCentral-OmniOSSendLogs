@@ -80,13 +80,28 @@ function runExportCommand() {
         }
         customEnv['HOME'] = '/home/user';
 
+        // Read SERIAL from personal_config.sh
+        try {
+            var configContent = fs.readFileSync('/home/user/keys/personal_config.sh', 'utf8');
+            var serialMatch = configContent.match(/SERIAL=(\S+)/);
+            if (serialMatch && serialMatch[1]) {
+                customEnv['SERIAL'] = serialMatch[1];
+                dbg('SERIAL set to: ' + serialMatch[1]);
+            } else {
+                dbg('Warning: SERIAL not found in personal_config.sh');
+            }
+        } catch (e) {
+            dbg('Warning: Could not read SERIAL from personal_config.sh: ' + e.toString());
+        }
+
         var options = {
             env: customEnv,  // Use custom environment with HOME override
-            cwd: EXPORT_CWD  // Set working directory
+            cwd: EXPORT_CWD, // Set working directory
+            shell: true      // Execute through shell
         };
 
-        // Use execFile with bash -c to ensure proper argument handling
-        var proc = childProcess.execFile('/bin/bash', ['-c', EXPORT_CMD], options);
+        // Use execFile with shell option
+        var proc = childProcess.execFile(EXPORT_BIN, ['--mode', 'server'], options);
         var stdout = '';
         var stderr = '';
 
