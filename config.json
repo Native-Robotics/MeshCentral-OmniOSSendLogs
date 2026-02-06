@@ -1,7 +1,7 @@
 {
   "name": "OmniOS Send Logs",
   "shortName": "omniossendlogs",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "author": "wwwfyl",
   "description": "Send OmniOS's and apps logs to server via export_data command.",
   "hasAdminPanel": false,

@@ -175,8 +175,7 @@ function sendResult(success, message) {
 
     // Prefer sending via mesh object if available (context-aware)
     var sent = false;
-    if (mesh) {
-    
+
     // Try sending via wscon (direct console connection) first if available
     if (wscon && typeof wscon.send === 'function') {
         try {
