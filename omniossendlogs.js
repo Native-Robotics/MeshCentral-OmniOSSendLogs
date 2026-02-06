@@ -173,10 +173,33 @@ module.exports.omniossendlogs = function (parent) {
             return;
         }
 
-        // Remove existing export row if present
+        // Check for existing row to update in-place
         var existingRow = table.querySelector('#omniossendlogsTableRow');
-        if (existingRow && existingRow.parentNode) {
-            existingRow.parentNode.removeChild(existingRow);
+
+        // Get current status
+        pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
+        var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id] || null;
+        var statusHtml = '';
+        var linkStyle = '';
+
+        if (status) {
+            if (status.status === 'running') {
+                statusHtml = ' <span style="color:#007bff;">⏳ Running...</span>';
+                linkStyle = 'pointer-events:none;opacity:0.5;';
+            } else if (status.status === 'success') {
+                statusHtml = ' <span style="color:#28a745;">✓ ' + obj.escapeHtml(status.message) + '</span>';
+            } else if (status.status === 'error') {
+                statusHtml = ' <span style="color:#dc3545;">✗ ' + obj.escapeHtml(status.message) + '</span>';
+            }
+        }
+
+        // If row exists, update it and exit (prevents flickering and deletion issues)
+        if (existingRow) {
+            var contentCell = existingRow.querySelector('td:nth-child(2)');
+            if (contentCell) {
+                contentCell.innerHTML = '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' + statusHtml;
+            }
+            return;
         }
 
         // Find insertion point: after Apps row (from omniosversion) or before Hostname
@@ -206,23 +229,6 @@ module.exports.omniossendlogs = function (parent) {
         // Determine insertion point
         if (appsRow) {
             insertAfter = appsRow;
-        }
-
-        // Get current status
-        pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
-        var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id] || null;
-        var statusHtml = '';
-        var linkStyle = '';
-
-        if (status) {
-            if (status.status === 'running') {
-                statusHtml = ' <span style="color:#007bff;">⏳ Running...</span>';
-                linkStyle = 'pointer-events:none;opacity:0.5;';
-            } else if (status.status === 'success') {
-                statusHtml = ' <span style="color:#28a745;">✓ ' + obj.escapeHtml(status.message) + '</span>';
-            } else if (status.status === 'error') {
-                statusHtml = ' <span style="color:#dc3545;">✗ ' + obj.escapeHtml(status.message) + '</span>';
-            }
         }
 
         // Create the export row HTML
