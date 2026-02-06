@@ -79,8 +79,14 @@ function runExportCommand() {
             customEnv[key] = process.env[key];
         }
         customEnv['HOME'] = '/home/user';
+        var username = 'user';
+        var cmdParts = [];
+        
+        // 1. Change directory
+        cmdParts.push('cd ' + EXPORT_CWD);
 
         // Read SERIAL from personal_config.sh
+        // 2. Read SERIAL from personal_config.sh and export it
         try {
             var configBuffer = fs.readFileSync('/home/user/keys/personal_config.sh');
             // Convert buffer to string (MeshAgent returns Uint8Array)
@@ -88,6 +94,7 @@ function runExportCommand() {
             var serialMatch = configContent.match(/SERIAL=(\S+)/);
             if (serialMatch && serialMatch[1]) {
                 customEnv['SERIAL'] = serialMatch[1];
+                cmdParts.push('export SERIAL=\'' + serialMatch[1] + '\'');
                 dbg('SERIAL set to: ' + serialMatch[1]);
             } else {
                 dbg('Warning: SERIAL not found in personal_config.sh');
@@ -103,16 +110,25 @@ function runExportCommand() {
         }
         customEnv['PYTHONPATH'] = pythonPath;
         dbg('PYTHONPATH set to: ' + pythonPath);
+        // 3. Set PYTHONPATH
+        cmdParts.push('export PYTHONPATH=$PYTHONPATH:/home/user/launchpad/libs');
 
         var options = {
             env: customEnv,  // Use custom environment with HOME, SERIAL, PYTHONPATH
             cwd: EXPORT_CWD  // Set working directory
         };
+        // 4. Run python script
+        cmdParts.push(PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server');
 
         // Use /bin/sh -c to run command - MeshAgent only supports execFile
         var fullCmd = PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server';
         dbg('Full command: ' + fullCmd);
         var proc = childProcess.execFile('/bin/sh', ['-c', fullCmd], options);
+        var fullCmd = cmdParts.join(' && ');
+        dbg('Executing via su - ' + username + ': ' + fullCmd);
+
+        var options = { maxBuffer: 1024 * 1024 };
+        var proc = childProcess.execFile('/bin/su', ['-', username, '-c', fullCmd], options);
         var stdout = '';
         var stderr = '';
 
