@@ -81,7 +81,7 @@ function runExportCommand() {
         customEnv['HOME'] = '/home/user';
         var username = 'user';
         var cmdParts = [];
-        
+
         // 1. Change directory
         cmdParts.push('cd ' + EXPORT_CWD);
 
@@ -173,21 +173,6 @@ function sendResult(success, message) {
         message: message
     };
 
-    // Always use MeshAgent.SendCommand for plugin communication
-    // The wscon object doesn't have a direct send() method for plugins
-    dbg('Sending via MeshAgent');
-    try {
-        require('MeshAgent').SendCommand(response);
-    } catch (e) {
-        dbg('Error sending via MeshAgent: ' + e.toString());
-        // Fallback: try sending through mesh parent if available
-        if (mesh && typeof mesh.SendCommand === 'function') {
-            try {
-                dbg('Fallback: Sending via mesh.SendCommand');
-                mesh.SendCommand(response);
-            } catch (e2) {
-                dbg('Fallback also failed: ' + e2.toString());
-            }
     // Prefer sending via mesh object if available (context-aware)
     var sent = false;
     if (mesh && typeof mesh.SendCommand === 'function') {
