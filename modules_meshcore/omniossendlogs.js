@@ -175,13 +175,23 @@ function sendResult(success, message) {
 
     // Prefer sending via mesh object if available (context-aware)
     var sent = false;
-    if (mesh && typeof mesh.SendCommand === 'function') {
-        try {
-            dbg('Sending via mesh.SendCommand');
-            mesh.SendCommand(response);
-            sent = true;
-        } catch (e) {
-            dbg('Error sending via mesh.SendCommand: ' + e.toString());
+    if (mesh) {
+        if (typeof mesh.SendCommand === 'function') {
+            try {
+                dbg('Sending via mesh.SendCommand');
+                mesh.SendCommand(response);
+                sent = true;
+            } catch (e) {
+                dbg('Error sending via mesh.SendCommand: ' + e.toString());
+            }
+        } else if (typeof mesh.send === 'function') {
+            try {
+                dbg('Sending via mesh.send');
+                mesh.send(JSON.stringify(response));
+                sent = true;
+            } catch (e) {
+                dbg('Error sending via mesh.send: ' + e.toString());
+            }
         }
     }
 
