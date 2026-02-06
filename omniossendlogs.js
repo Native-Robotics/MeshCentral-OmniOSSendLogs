@@ -13,10 +13,10 @@ module.exports.omniossendlogs = function (parent) {
     obj.pending = {}; // nodeid => [sessionIds]
     obj.inflight = {}; // nodeid => boolean
     obj.lastResult = {}; // nodeid => { success, message, time }
-    
+
     // Client-side state (initialized when running in browser)
     obj.exportStatus = {}; // nodeid => { status, message, time }
-    
+
     obj.exports = [
         'onDeviceRefreshEnd',
         'exportResult',
@@ -159,7 +159,7 @@ module.exports.omniossendlogs = function (parent) {
             console.log('[omniossendlogs] currentNode undefined or invalid');
             return;
         }
-        
+
         // Find the General content area
         var p10html = Q('p10html');
         if (!p10html) {
@@ -183,7 +183,7 @@ module.exports.omniossendlogs = function (parent) {
         var insertAfter = null;
         var hostnameRow = null;
         var appsRow = null;
-        
+
         // Look for Apps row and Hostname row
         var rows = table.getElementsByTagName('tr');
         for (var i = 0; i < rows.length; i++) {
@@ -212,7 +212,7 @@ module.exports.omniossendlogs = function (parent) {
         var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id] || null;
         var statusHtml = '';
         var linkStyle = '';
-        
+
         if (status) {
             if (status.status === 'running') {
                 statusHtml = ' <span style="color:#007bff;">⏳ Running...</span>';
@@ -255,31 +255,62 @@ module.exports.omniossendlogs = function (parent) {
             console.log('[omniossendlogs] meshserver or currentNode undefined');
             return false;
         }
-        
+
         // Check if already running
         var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id];
         if (status && status.status === 'running') {
             console.log('[omniossendlogs] Export already running');
             return false;
         }
-        
+
+        var nodeId = currentNode._id;
+
         // Set running status immediately for UI feedback
-        pluginHandler.omniossendlogs.exportStatus[currentNode._id] = {
+        pluginHandler.omniossendlogs.exportStatus[nodeId] = {
             status: 'running',
             message: 'Export started...',
             time: Date.now()
         };
         pluginHandler.omniossendlogs.injectGeneral();
-        
+
         // Send request to server
-        console.log('[omniossendlogs] Sending triggerExport request for node:', currentNode._id);
+        console.log('[omniossendlogs] Sending triggerExport request for node:', nodeId);
         meshserver.send({
             action: 'plugin',
             plugin: 'omniossendlogs',
             pluginaction: 'triggerExport',
-            nodeid: currentNode._id
+            nodeid: nodeId
         });
-        
+
+        // Timeout handler to clear "Running" state if no response
+        setTimeout(function () {
+            var s = pluginHandler.omniossendlogs.exportStatus[nodeId];
+            if (s && s.status === 'running') {
+                console.log('[omniossendlogs] Export timed out for node:', nodeId);
+                pluginHandler.omniossendlogs.exportStatus[nodeId] = {
+                    status: 'error',
+                    message: 'Timeout: No response',
+                    time: Date.now()
+                };
+
+                // Update UI if still on the same node
+                if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === nodeId) {
+                    pluginHandler.omniossendlogs.injectGeneral();
+                }
+
+                // Clear error message after 10 seconds
+                setTimeout(function () {
+                    var errStatus = pluginHandler.omniossendlogs.exportStatus[nodeId];
+                    if (errStatus && errStatus.status === 'error' && errStatus.message === 'Timeout: No response') {
+                        delete pluginHandler.omniossendlogs.exportStatus[nodeId];
+                        if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === nodeId) {
+                            pluginHandler.omniossendlogs.injectGeneral();
+                        }
+                    }
+                }, 10000);
+            }
+        }, 60000); // 60 seconds timeout
+
         return false;
     };
 
@@ -289,21 +320,21 @@ module.exports.omniossendlogs = function (parent) {
             console.log('[omniossendlogs] exportResult: invalid message structure');
             return;
         }
-        
+
         pluginHandler.omniossendlogs.exportStatus[msg.data.nodeid] = {
             status: msg.data.status,
             message: msg.data.message,
             time: Date.now()
         };
-        
+
         // Update UI if this is the current node
         if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === msg.data.nodeid) {
             pluginHandler.omniossendlogs.injectGeneral();
         }
-        
+
         // Clear status after 10 seconds for success/error
         if (msg.data.status !== 'running') {
-            setTimeout(function() {
+            setTimeout(function () {
                 var currentStatus = pluginHandler.omniossendlogs.exportStatus[msg.data.nodeid];
                 if (currentStatus && currentStatus.time && (Date.now() - currentStatus.time) >= 9000) {
                     delete pluginHandler.omniossendlogs.exportStatus[msg.data.nodeid];
@@ -316,7 +347,7 @@ module.exports.omniossendlogs = function (parent) {
     };
 
     obj.onDeviceRefreshEnd = function () {
-        console.log('[omniossendlogs] onDeviceRefreshEnd called, currentNode:', 
+        console.log('[omniossendlogs] onDeviceRefreshEnd called, currentNode:',
             (typeof currentNode !== 'undefined' && currentNode) ? currentNode._id : 'undefined');
         if (typeof meshserver === 'undefined') {
             console.log('[omniossendlogs] meshserver is undefined');
@@ -329,6 +360,6 @@ module.exports.omniossendlogs = function (parent) {
     // --- admin panel stub (not used) ---
     obj.handleAdminReq = function (req, res, user) { res.sendStatus(401); };
     obj.handleAdminPostReq = function (req, res, user) { res.sendStatus(401); };
-    
+
     return obj;
 };
