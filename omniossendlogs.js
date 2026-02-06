@@ -209,6 +209,7 @@ module.exports.omniossendlogs = function (parent) {
         }
 
         // Get current status
+        pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
         var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id] || null;
         var statusHtml = '';
         var linkStyle = '';
@@ -257,6 +258,7 @@ module.exports.omniossendlogs = function (parent) {
         }
 
         // Check if already running
+        pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
         var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id];
         if (status && status.status === 'running') {
             console.log('[omniossendlogs] Export already running');
@@ -321,6 +323,7 @@ module.exports.omniossendlogs = function (parent) {
             return;
         }
 
+        pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
         pluginHandler.omniossendlogs.exportStatus[msg.data.nodeid] = {
             status: msg.data.status,
             message: msg.data.message,
