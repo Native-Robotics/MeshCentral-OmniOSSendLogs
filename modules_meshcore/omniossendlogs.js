@@ -188,6 +188,24 @@ function sendResult(success, message) {
             } catch (e2) {
                 dbg('Fallback also failed: ' + e2.toString());
             }
+    // Prefer sending via mesh object if available (context-aware)
+    var sent = false;
+    if (mesh && typeof mesh.SendCommand === 'function') {
+        try {
+            dbg('Sending via mesh.SendCommand');
+            mesh.SendCommand(response);
+            sent = true;
+        } catch (e) {
+            dbg('Error sending via mesh.SendCommand: ' + e.toString());
+        }
+    }
+
+    if (!sent) {
+        dbg('Sending via MeshAgent.SendCommand');
+        try {
+            require('MeshAgent').SendCommand(response);
+        } catch (e) {
+            dbg('Error sending via MeshAgent.SendCommand: ' + e.toString());
         }
     }
 }
