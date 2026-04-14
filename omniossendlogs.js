@@ -89,6 +89,9 @@ module.exports.omniossendlogs = function (parent) {
                     obj.debug('omniossendlogs', 'triggerExport: no nodeid');
                     return;
                 }
+                // Resolve session ID: browser does not send it explicitly, so derive from the WS connection
+                var sessionid = command.sessionid || (myparent.ws && myparent.ws.sessionId);
+                obj.debug('omniossendlogs', 'triggerExport: sessionid resolved as:', sessionid);
                 // Send immediate "running" status
                 var runningMsg = {
                     action: 'plugin',
@@ -96,8 +99,8 @@ module.exports.omniossendlogs = function (parent) {
                     method: 'exportResult',
                     data: { nodeid: nodeid, status: 'running', message: 'Export started...' }
                 };
-                obj.sendToSession(command.sessionid, myparent, runningMsg, grandparent);
-                obj.queueSession(nodeid, command.sessionid);
+                obj.sendToSession(sessionid, myparent, runningMsg, grandparent);
+                obj.queueSession(nodeid, sessionid);
                 obj.requestExportFromAgent(nodeid);
                 break;
             }
@@ -187,9 +190,9 @@ module.exports.omniossendlogs = function (parent) {
                 statusHtml = ' <span style="color:#007bff;">⏳ Running...</span>';
                 linkStyle = 'pointer-events:none;opacity:0.5;';
             } else if (status.status === 'success') {
-                statusHtml = ' <span style="color:#28a745;">✓ ' + obj.escapeHtml(status.message) + '</span>';
+                statusHtml = ' <span style="color:#28a745;">✓ ' + pluginHandler.omniossendlogs.escapeHtml(status.message) + '</span>';
             } else if (status.status === 'error') {
-                statusHtml = ' <span style="color:#dc3545;">✗ ' + obj.escapeHtml(status.message) + '</span>';
+                statusHtml = ' <span style="color:#dc3545;">✗ ' + pluginHandler.omniossendlogs.escapeHtml(status.message) + '</span>';
             }
         }
 

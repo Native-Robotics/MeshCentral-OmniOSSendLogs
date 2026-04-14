@@ -82,6 +82,10 @@ function runExportCommand() {
         var username = 'user';
         var cmdParts = [];
 
+        // 0. Source user profile to get full login environment (PATH, pyenv, etc.)
+        //    Same as manually running: source ~/.profile
+        cmdParts.push('. /home/' + username + '/.profile || true');
+
         // 1. Change directory
         cmdParts.push('cd ' + EXPORT_CWD);
 
@@ -113,22 +117,13 @@ function runExportCommand() {
         // 3. Set PYTHONPATH
         cmdParts.push('export PYTHONPATH=$PYTHONPATH:/home/user/launchpad/libs');
 
-        var options = {
-            env: customEnv,  // Use custom environment with HOME, SERIAL, PYTHONPATH
-            cwd: EXPORT_CWD  // Set working directory
-        };
         // 4. Run python script
         cmdParts.push(PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server');
 
-        // Use /bin/sh -c to run command - MeshAgent only supports execFile
-        var fullCmd = PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server';
-        dbg('Full command: ' + fullCmd);
-        var proc = childProcess.execFile('/bin/sh', ['-c', fullCmd], options);
         var fullCmd = cmdParts.join(' && ');
         dbg('Executing via su - ' + username + ': ' + fullCmd);
 
-        var options = { maxBuffer: 1024 * 1024 };
-        var proc = childProcess.execFile('/bin/su', ['-', username, '-c', fullCmd], options);
+        var proc = childProcess.execFile('/bin/su', ['-', username, '-c', fullCmd], {});
         var stdout = '';
         var stderr = '';
 
@@ -174,7 +169,7 @@ function sendResult(success, message) {
     };
 
     // Prefer sending via mesh object if available (context-aware)
-    var sent = false;
+    var sent = false; 
 
     // Try sending via wscon (direct console connection) first if available
     if (wscon && typeof wscon.send === 'function') {
