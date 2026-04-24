@@ -241,7 +241,9 @@ module.exports.omniossendlogs = function (parent) {
         if (existingRow) {
             var contentCell = existingRow.querySelector('td:nth-child(2)');
             if (contentCell) {
-                contentCell.innerHTML = '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' + statusHtml;
+                contentCell.innerHTML = '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' +
+                    '&nbsp;&nbsp;<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExportTrajectories(); return false;">Export Trajectories</a>' +
+                    statusHtml;
             }
             return;
         }
@@ -278,6 +280,7 @@ module.exports.omniossendlogs = function (parent) {
         // Create the export row HTML
         var rowHtml = '<tr id="omniossendlogsTableRow"><td class="style7">Export</td><td class="style9">' +
             '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' +
+            '&nbsp;&nbsp;<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExportTrajectories(); return false;">Export Trajectories</a>' +
             statusHtml +
             '</td></tr>';
 
@@ -362,6 +365,64 @@ module.exports.omniossendlogs = function (parent) {
                 }, 10000);
             }
         }, 60000); // 60 seconds timeout
+
+        return false;
+    };
+
+    obj.triggerExportTrajectories = function () {
+        console.log('[omniossendlogs] triggerExportTrajectories called');
+        if (typeof meshserver === 'undefined' || typeof currentNode === 'undefined' || !currentNode) {
+            console.log('[omniossendlogs] meshserver or currentNode undefined');
+            return false;
+        }
+
+        pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
+        var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id];
+        if (status && status.status === 'running') {
+            console.log('[omniossendlogs] Export already running');
+            return false;
+        }
+
+        var nodeId = currentNode._id;
+
+        pluginHandler.omniossendlogs.exportStatus[nodeId] = {
+            status: 'running',
+            message: 'Trajectories export started...',
+            time: Date.now()
+        };
+        pluginHandler.omniossendlogs.injectGeneral();
+
+        console.log('[omniossendlogs] Sending triggerExportTrajectories request for node:', nodeId);
+        meshserver.send({
+            action: 'plugin',
+            plugin: 'omniossendlogs',
+            pluginaction: 'triggerExportTrajectories',
+            nodeid: nodeId
+        });
+
+        setTimeout(function () {
+            var s = pluginHandler.omniossendlogs.exportStatus[nodeId];
+            if (s && s.status === 'running') {
+                console.log('[omniossendlogs] Trajectories export timed out for node:', nodeId);
+                pluginHandler.omniossendlogs.exportStatus[nodeId] = {
+                    status: 'error',
+                    message: 'Timeout: No response',
+                    time: Date.now()
+                };
+                if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === nodeId) {
+                    pluginHandler.omniossendlogs.injectGeneral();
+                }
+                setTimeout(function () {
+                    var errStatus = pluginHandler.omniossendlogs.exportStatus[nodeId];
+                    if (errStatus && errStatus.status === 'error' && errStatus.message === 'Timeout: No response') {
+                        delete pluginHandler.omniossendlogs.exportStatus[nodeId];
+                        if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === nodeId) {
+                            pluginHandler.omniossendlogs.injectGeneral();
+                        }
+                    }
+                }, 10000);
+            }
+        }, 60000);
 
         return false;
     };
