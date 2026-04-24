@@ -21,6 +21,7 @@ module.exports.omniossendlogs = function (parent) {
         'onDeviceRefreshEnd',
         'exportResult',
         'triggerExport',
+        'triggerExportTrajectories',
         'injectGeneral',
         'escapeHtml'
     ];
@@ -73,6 +74,26 @@ module.exports.omniossendlogs = function (parent) {
         }
     };
 
+    obj.requestExportTrajectoriesFromAgent = function (nodeid) {
+        obj.debug('omniossendlogs', 'requestExportTrajectoriesFromAgent called for:', nodeid);
+        if (!nodeid) { obj.debug('omniossendlogs', 'requestExportTrajectoriesFromAgent: no nodeid'); return; }
+        if (obj.inflight[nodeid]) { obj.debug('omniossendlogs', 'requestExportTrajectoriesFromAgent: already inflight for', nodeid); return; }
+        obj.inflight[nodeid] = true;
+        var agent = obj.meshServer.webserver.wsagents[nodeid];
+        if (agent == null) {
+            obj.debug('omniossendlogs', 'requestExportTrajectoriesFromAgent: agent not found for', nodeid);
+            obj.inflight[nodeid] = false;
+            return;
+        }
+        try {
+            obj.debug('omniossendlogs', 'requestExportTrajectoriesFromAgent: sending runExportTrajectories command to', nodeid);
+            agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'runExportTrajectories' }));
+        } catch (e) {
+            obj.debug('omniossendlogs', 'requestExportTrajectoriesFromAgent: error sending to agent', nodeid, e);
+            obj.inflight[nodeid] = false;
+        }
+    };
+
     // --- hooks ---
     obj.hook_agentCoreIsStable = function (myparent, gp) {
         obj.debug('omniossendlogs', 'hook_agentCoreIsStable called for node:', myparent.dbNodeKey);
@@ -102,6 +123,26 @@ module.exports.omniossendlogs = function (parent) {
                 obj.sendToSession(sessionid, myparent, runningMsg, grandparent);
                 obj.queueSession(nodeid, sessionid);
                 obj.requestExportFromAgent(nodeid);
+                break;
+            }
+            case 'triggerExportTrajectories': {
+                var nodeid = command.nodeid || myparent.dbNodeKey;
+                obj.debug('omniossendlogs', 'triggerExportTrajectories request for node:', nodeid);
+                if (!nodeid) {
+                    obj.debug('omniossendlogs', 'triggerExportTrajectories: no nodeid');
+                    return;
+                }
+                var sessionid = command.sessionid || (myparent.ws && myparent.ws.sessionId);
+                obj.debug('omniossendlogs', 'triggerExportTrajectories: sessionid resolved as:', sessionid);
+                var runningMsg = {
+                    action: 'plugin',
+                    plugin: 'omniossendlogs',
+                    method: 'exportResult',
+                    data: { nodeid: nodeid, status: 'running', message: 'Trajectories export started...' }
+                };
+                obj.sendToSession(sessionid, myparent, runningMsg, grandparent);
+                obj.queueSession(nodeid, sessionid);
+                obj.requestExportTrajectoriesFromAgent(nodeid);
                 break;
             }
             case 'exportResult': {
