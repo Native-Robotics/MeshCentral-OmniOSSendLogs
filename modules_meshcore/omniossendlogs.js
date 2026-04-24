@@ -45,14 +45,18 @@ function consoleaction(args, rights, sessionid, parent) {
             dbg('runExport action called');
             runExportCommand();
             break;
+        case 'runExportTrajectories':
+            dbg('runExportTrajectories action called');
+            runExportCommand('-t yes -l 1');
+            break;
         default:
             dbg('Unknown action: ' + fnname);
             break;
     }
 }
 
-function runExportCommand() {
-    dbg('runExportCommand called');
+function runExportCommand(extraArgs) {
+    dbg('runExportCommand called' + (extraArgs ? ' extraArgs=' + extraArgs : ''));
 
     var childProcess = require('child_process');
     var fs = require('fs');
@@ -70,7 +74,7 @@ function runExportCommand() {
         return;
     }
 
-    dbg('Executing: ' + PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server (cwd: ' + EXPORT_CWD + ')');
+    dbg('Executing: ' + PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server' + (extraArgs ? ' ' + extraArgs : '') + ' (cwd: ' + EXPORT_CWD + ')');
 
     try {
         // Create custom environment with HOME set to /home/user
@@ -118,7 +122,7 @@ function runExportCommand() {
         cmdParts.push('export PYTHONPATH=$PYTHONPATH:/home/user/launchpad/libs');
 
         // 4. Run python script
-        cmdParts.push(PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server');
+        cmdParts.push(PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server' + (extraArgs ? ' ' + extraArgs : ''));
 
         var fullCmd = cmdParts.join(' && ');
         dbg('Executing via su - ' + username + ': ' + fullCmd);
