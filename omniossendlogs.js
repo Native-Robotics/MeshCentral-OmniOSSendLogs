@@ -16,8 +16,9 @@ module.exports.omniossendlogs = function (parent) {
 
     // Settings-export capability check state (separate from the export
     // state above so a capability check never blocks or is blocked by an
-    // in-flight export)
-    obj.capabilityCache = {}; // nodeid => true|false
+    // in-flight export). No result cache here on purpose - every check
+    // re-asks the agent, which caches its own --help probe; a server-side
+    // cache with no expiry could get stuck on a stale answer forever.
     obj.capabilityInflight = {}; // nodeid => boolean
     obj.capabilityPending = {}; // nodeid => [sessionIds]
 
@@ -157,6 +158,15 @@ module.exports.omniossendlogs = function (parent) {
         try {
             obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: sending checkSettingsCapability command to', nodeid);
             agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'checkSettingsCapability' }));
+            // If the agent never answers (message lost, agent disconnects
+            // mid-request), don't leave this node permanently stuck
+            // "in flight" - that would silently block every future check.
+            setTimeout(function () {
+                if (obj.capabilityInflight[nodeid]) {
+                    obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: timed out waiting for', nodeid);
+                    obj.capabilityInflight[nodeid] = false;
+                }
+            }, 30000);
         } catch (e) {
             obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: error sending to agent', nodeid, e);
             obj.capabilityInflight[nodeid] = false;
@@ -243,18 +253,12 @@ module.exports.omniossendlogs = function (parent) {
                 }
                 var sessionid = command.sessionid || (myparent.ws && myparent.ws.sessionId);
 
-                if (obj.capabilityCache.hasOwnProperty(nodeid)) {
-                    obj.debug('omniossendlogs', 'checkSettingsCapability: answering from cache for', nodeid);
-                    var cachedMsg = {
-                        action: 'plugin',
-                        plugin: 'omniossendlogs',
-                        method: 'settingsCapabilityResult',
-                        data: { nodeid: nodeid, supported: obj.capabilityCache[nodeid] }
-                    };
-                    obj.sendToSession(sessionid, myparent, cachedMsg, grandparent);
-                    break;
-                }
-
+                // Always re-ask the agent rather than answering from a
+                // server-side cache: the agent already caches its own
+                // --help probe (cheap to re-ask), and a server-side cache
+                // here has no expiry - a false read once (e.g. before the
+                // agent had this code, or before Launchpad had the flag)
+                // would stay wrong forever with no way to recover.
                 obj.capabilityQueueSession(nodeid, sessionid);
                 obj.requestSettingsCapabilityFromAgent(nodeid);
                 break;
@@ -293,13 +297,13 @@ module.exports.omniossendlogs = function (parent) {
                     obj.debug('omniossendlogs', 'settingsCapabilityResult: no node');
                     return;
                 }
-                obj.capabilityCache[node] = !!command.supported;
+                var supported = !!command.supported;
                 obj.capabilityInflight[node] = false;
                 var outMsg = {
                     action: 'plugin',
                     plugin: 'omniossendlogs',
                     method: 'settingsCapabilityResult',
-                    data: { nodeid: node, supported: obj.capabilityCache[node] }
+                    data: { nodeid: node, supported: supported }
                 };
                 obj.debug('omniossendlogs', 'settingsCapabilityResult: flushing to pending sessions');
                 obj.capabilityFlushPending(node, outMsg, grandparent);
