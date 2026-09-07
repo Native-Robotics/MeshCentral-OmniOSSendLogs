@@ -118,13 +118,30 @@ function buildExportSuArgv(pythonArgs) {
     return ['/bin/su', ['-', username, '-c', fullCmd]];
 }
 
+// db.Put(key, object) serializes to JSON for storage, but db.Get(key)
+// hands back the raw stored string rather than parsing it - reading the
+// cache without this parse step silently produced a string whose property
+// accesses (cached.supportsSettingsOnly) were all undefined, which
+// JSON.stringify then drops from any message built from it.
+function readCachedCapabilities() {
+    var raw = db.Get(CAPABILITY_CACHE_KEY);
+    if (!raw) return null;
+    if (typeof raw !== 'string') return raw;
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        dbg('readCachedCapabilities: failed to parse cached value: ' + e.toString());
+        return null;
+    }
+}
+
 // Runs export_data.py --help once, caches which capability-relevant flags
 // it advertises, and hands the result to callback. Cheap and side-effect
 // free: argparse's --help handling exits before any of the app's own logic
 // runs, so this never triggers a real export.
 function probeExportCapabilities(callback, force) {
     if (!force) {
-        var cached = db.Get(CAPABILITY_CACHE_KEY);
+        var cached = readCachedCapabilities();
         if (cached) {
             dbg('probeExportCapabilities: using cached result: ' + JSON.stringify(cached));
             callback(cached);
