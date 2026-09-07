@@ -7,7 +7,6 @@
 var mesh;
 var _sessionid;
 var isWsconnection = false;
-var wscon = null;
 var db = require('SimpleDataStore').Shared();
 
 // Command to execute for log export - direct python call
@@ -25,7 +24,6 @@ function dbg(msg) {
 
 function consoleaction(args, rights, sessionid, parent) {
     isWsconnection = false;
-    wscon = parent;
     _sessionid = sessionid;
 
     // Safe check and initialization of args['_']
@@ -244,50 +242,17 @@ function runExportCommand(extraArgs) {
     }
 }
 
-// Sends a message back to the server, trying every available channel in
-// turn. Shared by sendResult (export outcome) and the capability-check
-// response, which are the two message shapes this agent module sends.
+// Sends a message back to the server. mesh.SendCommand is the standard
+// primitive every MeshCentral plugin uses for this (consoleaction sets
+// mesh = parent, the same connection object meshcore.js itself calls
+// SendCommand on elsewhere) - falls back to the global MeshAgent object
+// only in the unexpected case mesh itself isn't set.
 function sendToServer(response) {
-    var sent = false;
-
-    // Try sending via wscon (direct console connection) first if available
-    if (wscon && typeof wscon.send === 'function') {
-        try {
-            dbg('Sending via wscon.send');
-            wscon.send(JSON.stringify(response));
-            sent = true;
-        } catch (e) {
-            dbg('Error sending via wscon.send: ' + e.toString());
-        }
-    }
-
-    if (!sent && mesh) {
-        if (typeof mesh.SendCommand === 'function') {
-            try {
-                dbg('Sending via mesh.SendCommand');
-                mesh.SendCommand(response);
-                sent = true;
-            } catch (e) {
-                dbg('Error sending via mesh.SendCommand: ' + e.toString());
-            }
-        } else if (typeof mesh.send === 'function') {
-            try {
-                dbg('Sending via mesh.send');
-                mesh.send(JSON.stringify(response));
-                sent = true;
-            } catch (e) {
-                dbg('Error sending via mesh.send: ' + e.toString());
-            }
-        }
-    }
-
-    if (!sent) {
-        dbg('Sending via MeshAgent.SendCommand');
-        try {
-            require('MeshAgent').SendCommand(response);
-        } catch (e) {
-            dbg('Error sending via MeshAgent.SendCommand: ' + e.toString());
-        }
+    dbg('sendToServer: ' + JSON.stringify(response));
+    try {
+        (mesh || require('MeshAgent')).SendCommand(response);
+    } catch (e) {
+        dbg('Error sending via SendCommand: ' + e.toString());
     }
 }
 
