@@ -8,11 +8,14 @@ var mesh;
 var _sessionid;
 var isWsconnection = false;
 var wscon = null;
+var db = require('SimpleDataStore').Shared();
 
 // Command to execute for log export - direct python call
 var PYTHON_BIN = '/usr/bin/python3';
 var EXPORT_SCRIPT = '/home/user/launchpad/pages/data/export_data.py';
 var EXPORT_CWD = '/home/user/launchpad';  // Working directory for export script
+
+var CAPABILITY_CACHE_KEY = 'plugin_omniossendlogs_capabilities_cache';
 
 function dbg(msg) {
     try {
@@ -43,15 +46,140 @@ function consoleaction(args, rights, sessionid, parent) {
     switch (fnname) {
         case 'runExport':
             dbg('runExport action called');
-            runExportCommand();
+            probeExportCapabilities(function (caps) {
+                var windowArg = caps.supports30m ? '30m' : (caps.supports2h ? '2h' : '1');
+                dbg('runExport: window arg chosen: ' + windowArg + ' (caps: ' + JSON.stringify(caps) + ')');
+                runExportCommand('-l ' + windowArg);
+            });
             break;
         case 'runExportTrajectories':
             dbg('runExportTrajectories action called');
             runExportCommand('-t yes -l 1');
             break;
+        case 'runExportSettings':
+            dbg('runExportSettings action called');
+            runExportCommand('--settings-only');
+            break;
+        case 'checkSettingsCapability':
+            dbg('checkSettingsCapability action called');
+            probeExportCapabilities(function (caps) {
+                sendToServer({
+                    action: 'plugin',
+                    plugin: 'omniossendlogs',
+                    pluginaction: 'settingsCapabilityResult',
+                    supported: caps.supportsSettingsOnly
+                });
+            });
+            break;
         default:
             dbg('Unknown action: ' + fnname);
             break;
+    }
+}
+
+// Builds the "su - user -c '...'" argv used to run export_data.py, shared by
+// a real export and the --help capability probe: both need the same shell
+// setup (login profile for PATH/pyenv, SERIAL, PYTHONPATH for func/libs)
+// since export_data.py imports func.* at module scope, before argparse ever
+// sees --help.
+function buildExportSuArgv(pythonArgs) {
+    var fs = require('fs');
+    var username = 'user';
+    var cmdParts = [];
+
+    // 0. Source user profile to get full login environment (PATH, pyenv, etc.)
+    //    Same as manually running: source ~/.profile
+    cmdParts.push('. /home/' + username + '/.profile || true');
+
+    // 1. Change directory
+    cmdParts.push('cd ' + EXPORT_CWD);
+
+    // 2. Read SERIAL from personal_config.sh and export it
+    try {
+        var configBuffer = fs.readFileSync('/home/user/keys/personal_config.sh');
+        var configContent = (typeof configBuffer === 'string') ? configBuffer : String.fromCharCode.apply(null, configBuffer);
+        var serialMatch = configContent.match(/SERIAL=(\S+)/);
+        if (serialMatch && serialMatch[1]) {
+            cmdParts.push('export SERIAL=\'' + serialMatch[1] + '\'');
+            dbg('SERIAL set to: ' + serialMatch[1]);
+        } else {
+            dbg('Warning: SERIAL not found in personal_config.sh');
+        }
+    } catch (e) {
+        dbg('Warning: Could not read SERIAL from personal_config.sh: ' + e.toString());
+    }
+
+    // 3. Set PYTHONPATH - needed even for --help, since export_data.py
+    //    imports func.* at module scope before argparse runs
+    cmdParts.push('export PYTHONPATH=$PYTHONPATH:/home/user/launchpad/libs');
+
+    // 4. Run python script
+    cmdParts.push(PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' ' + pythonArgs);
+
+    var fullCmd = cmdParts.join(' && ');
+    return ['/bin/su', ['-', username, '-c', fullCmd]];
+}
+
+// Runs export_data.py --help once, caches which capability-relevant flags
+// it advertises, and hands the result to callback. Cheap and side-effect
+// free: argparse's --help handling exits before any of the app's own logic
+// runs, so this never triggers a real export.
+function probeExportCapabilities(callback, force) {
+    if (!force) {
+        var cached = db.Get(CAPABILITY_CACHE_KEY);
+        if (cached) {
+            dbg('probeExportCapabilities: using cached result: ' + JSON.stringify(cached));
+            callback(cached);
+            return;
+        }
+    }
+
+    var childProcess = require('child_process');
+    var fs = require('fs');
+
+    try {
+        if (!fs.existsSync(EXPORT_SCRIPT)) {
+            dbg('probeExportCapabilities: script not found: ' + EXPORT_SCRIPT);
+            var missing = { supports30m: false, supports2h: false, supportsSettingsOnly: false };
+            db.Put(CAPABILITY_CACHE_KEY, missing);
+            callback(missing);
+            return;
+        }
+    } catch (e) {
+        dbg('probeExportCapabilities: error checking script existence: ' + e.toString());
+    }
+
+    var argv = buildExportSuArgv('--help');
+    dbg('probeExportCapabilities: running ' + argv[0] + ' ' + argv[1].join(' '));
+
+    try {
+        var proc = childProcess.execFile(argv[0], argv[1], {});
+        var stdout = '';
+        var stderr = '';
+
+        proc.stdout.on('data', function (chunk) { stdout += chunk.toString(); });
+        proc.stderr.on('data', function (chunk) { stderr += chunk.toString(); });
+
+        proc.on('exit', function (code) {
+            dbg('probeExportCapabilities: --help exited with code ' + code);
+            var caps = {
+                supports30m: stdout.indexOf('30m') !== -1,
+                supports2h: stdout.indexOf('2h') !== -1,
+                supportsSettingsOnly: stdout.indexOf('--settings-only') !== -1
+            };
+            dbg('probeExportCapabilities: result: ' + JSON.stringify(caps));
+            db.Put(CAPABILITY_CACHE_KEY, caps);
+            callback(caps);
+        });
+
+        proc.on('error', function (err) {
+            dbg('probeExportCapabilities: process error: ' + err.toString());
+            var errored = { supports30m: false, supports2h: false, supportsSettingsOnly: false };
+            callback(errored);
+        });
+    } catch (e) {
+        dbg('probeExportCapabilities: exception: ' + e.toString());
+        callback({ supports30m: false, supports2h: false, supportsSettingsOnly: false });
     }
 }
 
@@ -74,60 +202,14 @@ function runExportCommand(extraArgs) {
         return;
     }
 
-    dbg('Executing: ' + PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server' + (extraArgs ? ' ' + extraArgs : '') + ' (cwd: ' + EXPORT_CWD + ')');
+    var pythonArgs = '--mode server' + (extraArgs ? ' ' + extraArgs : '');
+    dbg('Executing: ' + PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' ' + pythonArgs + ' (cwd: ' + EXPORT_CWD + ')');
 
     try {
-        // Create custom environment with HOME set to /home/user
-        var customEnv = {};
-        for (var key in process.env) {
-            customEnv[key] = process.env[key];
-        }
-        customEnv['HOME'] = '/home/user';
-        var username = 'user';
-        var cmdParts = [];
+        var argv = buildExportSuArgv(pythonArgs);
+        dbg('Executing via su - user: ' + argv[1][3]);
 
-        // 0. Source user profile to get full login environment (PATH, pyenv, etc.)
-        //    Same as manually running: source ~/.profile
-        cmdParts.push('. /home/' + username + '/.profile || true');
-
-        // 1. Change directory
-        cmdParts.push('cd ' + EXPORT_CWD);
-
-        // Read SERIAL from personal_config.sh
-        // 2. Read SERIAL from personal_config.sh and export it
-        try {
-            var configBuffer = fs.readFileSync('/home/user/keys/personal_config.sh');
-            // Convert buffer to string (MeshAgent returns Uint8Array)
-            var configContent = (typeof configBuffer === 'string') ? configBuffer : String.fromCharCode.apply(null, configBuffer);
-            var serialMatch = configContent.match(/SERIAL=(\S+)/);
-            if (serialMatch && serialMatch[1]) {
-                customEnv['SERIAL'] = serialMatch[1];
-                cmdParts.push('export SERIAL=\'' + serialMatch[1] + '\'');
-                dbg('SERIAL set to: ' + serialMatch[1]);
-            } else {
-                dbg('Warning: SERIAL not found in personal_config.sh');
-            }
-        } catch (e) {
-            dbg('Warning: Could not read SERIAL from personal_config.sh: ' + e.toString());
-        }
-
-        // Set PYTHONPATH to include libs directory
-        var pythonPath = '/home/user/launchpad/libs';
-        if (customEnv['PYTHONPATH']) {
-            pythonPath = pythonPath + ':' + customEnv['PYTHONPATH'];
-        }
-        customEnv['PYTHONPATH'] = pythonPath;
-        dbg('PYTHONPATH set to: ' + pythonPath);
-        // 3. Set PYTHONPATH
-        cmdParts.push('export PYTHONPATH=$PYTHONPATH:/home/user/launchpad/libs');
-
-        // 4. Run python script
-        cmdParts.push(PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' --mode server' + (extraArgs ? ' ' + extraArgs : ''));
-
-        var fullCmd = cmdParts.join(' && ');
-        dbg('Executing via su - ' + username + ': ' + fullCmd);
-
-        var proc = childProcess.execFile('/bin/su', ['-', username, '-c', fullCmd], {});
+        var proc = childProcess.execFile(argv[0], argv[1], {});
         var stdout = '';
         var stderr = '';
 
@@ -162,18 +244,11 @@ function runExportCommand(extraArgs) {
     }
 }
 
-function sendResult(success, message) {
-    dbg('sendResult: success=' + success + ', message=' + message);
-    var response = {
-        action: 'plugin',
-        plugin: 'omniossendlogs',
-        pluginaction: 'exportResult',
-        success: success,
-        message: message
-    };
-
-    // Prefer sending via mesh object if available (context-aware)
-    var sent = false; 
+// Sends a message back to the server, trying every available channel in
+// turn. Shared by sendResult (export outcome) and the capability-check
+// response, which are the two message shapes this agent module sends.
+function sendToServer(response) {
+    var sent = false;
 
     // Try sending via wscon (direct console connection) first if available
     if (wscon && typeof wscon.send === 'function') {
@@ -214,6 +289,17 @@ function sendResult(success, message) {
             dbg('Error sending via MeshAgent.SendCommand: ' + e.toString());
         }
     }
+}
+
+function sendResult(success, message) {
+    dbg('sendResult: success=' + success + ', message=' + message);
+    sendToServer({
+        action: 'plugin',
+        plugin: 'omniossendlogs',
+        pluginaction: 'exportResult',
+        success: success,
+        message: message
+    });
 }
 
 module.exports = { consoleaction: consoleaction };
