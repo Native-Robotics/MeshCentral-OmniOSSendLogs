@@ -180,6 +180,10 @@ module.exports.omniossendlogs = function (parent) {
     };
 
     obj.serveraction = function (command, myparent, grandparent) {
+        // Unconditional (not gated on --debug) so the raw payload is
+        // visible in the server's own log/stdout while diagnosing the
+        // agent-to-browser capability relay.
+        console.log('[omniossendlogs] serveraction received:', JSON.stringify(command));
         obj.debug('omniossendlogs', 'serveraction received:', command.pluginaction);
         switch (command.pluginaction) {
             case 'triggerExport': {
