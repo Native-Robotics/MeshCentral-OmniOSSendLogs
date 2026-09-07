@@ -14,14 +14,25 @@ module.exports.omniossendlogs = function (parent) {
     obj.inflight = {}; // nodeid => boolean
     obj.lastResult = {}; // nodeid => { success, message, time }
 
+    // Settings-export capability check state (separate from the export
+    // state above so a capability check never blocks or is blocked by an
+    // in-flight export)
+    obj.capabilityCache = {}; // nodeid => true|false
+    obj.capabilityInflight = {}; // nodeid => boolean
+    obj.capabilityPending = {}; // nodeid => [sessionIds]
+
     // Client-side state (initialized when running in browser)
     obj.exportStatus = {}; // nodeid => { status, message, time }
+    obj.settingsCapability = {}; // nodeid => true|false|undefined
+    obj.settingsCapabilityAsked = {}; // nodeid => boolean
 
     obj.exports = [
         'onDeviceRefreshEnd',
         'exportResult',
         'triggerExport',
         'triggerExportTrajectories',
+        'triggerExportSettings',
+        'settingsCapabilityResult',
         'injectGeneral',
         'escapeHtml'
     ];
@@ -46,6 +57,24 @@ module.exports.omniossendlogs = function (parent) {
         if (!obj.pending[nodeid]) return;
         var sessions = obj.pending[nodeid];
         obj.pending[nodeid] = [];
+        for (var i = 0; i < sessions.length; i++) {
+            var sid = sessions[i];
+            if (grandparent && grandparent.wssessions2 && grandparent.wssessions2[sid]) {
+                try { grandparent.wssessions2[sid].send(JSON.stringify(msg)); } catch (e) { }
+            }
+        }
+    };
+
+    obj.capabilityQueueSession = function (nodeid, sessionid) {
+        if (!nodeid || !sessionid) return;
+        if (!obj.capabilityPending[nodeid]) obj.capabilityPending[nodeid] = [];
+        if (obj.capabilityPending[nodeid].indexOf(sessionid) === -1) obj.capabilityPending[nodeid].push(sessionid);
+    };
+
+    obj.capabilityFlushPending = function (nodeid, msg, grandparent) {
+        if (!obj.capabilityPending[nodeid]) return;
+        var sessions = obj.capabilityPending[nodeid];
+        obj.capabilityPending[nodeid] = [];
         for (var i = 0; i < sessions.length; i++) {
             var sid = sessions[i];
             if (grandparent && grandparent.wssessions2 && grandparent.wssessions2[sid]) {
@@ -91,6 +120,46 @@ module.exports.omniossendlogs = function (parent) {
         } catch (e) {
             obj.debug('omniossendlogs', 'requestExportTrajectoriesFromAgent: error sending to agent', nodeid, e);
             obj.inflight[nodeid] = false;
+        }
+    };
+
+    obj.requestExportSettingsFromAgent = function (nodeid) {
+        obj.debug('omniossendlogs', 'requestExportSettingsFromAgent called for:', nodeid);
+        if (!nodeid) { obj.debug('omniossendlogs', 'requestExportSettingsFromAgent: no nodeid'); return; }
+        if (obj.inflight[nodeid]) { obj.debug('omniossendlogs', 'requestExportSettingsFromAgent: already inflight for', nodeid); return; }
+        obj.inflight[nodeid] = true;
+        var agent = obj.meshServer.webserver.wsagents[nodeid];
+        if (agent == null) {
+            obj.debug('omniossendlogs', 'requestExportSettingsFromAgent: agent not found for', nodeid);
+            obj.inflight[nodeid] = false;
+            return;
+        }
+        try {
+            obj.debug('omniossendlogs', 'requestExportSettingsFromAgent: sending runExportSettings command to', nodeid);
+            agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'runExportSettings' }));
+        } catch (e) {
+            obj.debug('omniossendlogs', 'requestExportSettingsFromAgent: error sending to agent', nodeid, e);
+            obj.inflight[nodeid] = false;
+        }
+    };
+
+    obj.requestSettingsCapabilityFromAgent = function (nodeid) {
+        obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent called for:', nodeid);
+        if (!nodeid) { obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: no nodeid'); return; }
+        if (obj.capabilityInflight[nodeid]) { obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: already inflight for', nodeid); return; }
+        obj.capabilityInflight[nodeid] = true;
+        var agent = obj.meshServer.webserver.wsagents[nodeid];
+        if (agent == null) {
+            obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: agent not found for', nodeid);
+            obj.capabilityInflight[nodeid] = false;
+            return;
+        }
+        try {
+            obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: sending checkSettingsCapability command to', nodeid);
+            agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'checkSettingsCapability' }));
+        } catch (e) {
+            obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: error sending to agent', nodeid, e);
+            obj.capabilityInflight[nodeid] = false;
         }
     };
 
@@ -145,6 +214,51 @@ module.exports.omniossendlogs = function (parent) {
                 obj.requestExportTrajectoriesFromAgent(nodeid);
                 break;
             }
+            case 'triggerExportSettings': {
+                var nodeid = command.nodeid || myparent.dbNodeKey;
+                obj.debug('omniossendlogs', 'triggerExportSettings request for node:', nodeid);
+                if (!nodeid) {
+                    obj.debug('omniossendlogs', 'triggerExportSettings: no nodeid');
+                    return;
+                }
+                var sessionid = command.sessionid || (myparent.ws && myparent.ws.sessionId);
+                obj.debug('omniossendlogs', 'triggerExportSettings: sessionid resolved as:', sessionid);
+                var runningMsg = {
+                    action: 'plugin',
+                    plugin: 'omniossendlogs',
+                    method: 'exportResult',
+                    data: { nodeid: nodeid, status: 'running', message: 'Settings export started...' }
+                };
+                obj.sendToSession(sessionid, myparent, runningMsg, grandparent);
+                obj.queueSession(nodeid, sessionid);
+                obj.requestExportSettingsFromAgent(nodeid);
+                break;
+            }
+            case 'checkSettingsCapability': {
+                var nodeid = command.nodeid || myparent.dbNodeKey;
+                obj.debug('omniossendlogs', 'checkSettingsCapability request for node:', nodeid);
+                if (!nodeid) {
+                    obj.debug('omniossendlogs', 'checkSettingsCapability: no nodeid');
+                    return;
+                }
+                var sessionid = command.sessionid || (myparent.ws && myparent.ws.sessionId);
+
+                if (obj.capabilityCache.hasOwnProperty(nodeid)) {
+                    obj.debug('omniossendlogs', 'checkSettingsCapability: answering from cache for', nodeid);
+                    var cachedMsg = {
+                        action: 'plugin',
+                        plugin: 'omniossendlogs',
+                        method: 'settingsCapabilityResult',
+                        data: { nodeid: nodeid, supported: obj.capabilityCache[nodeid] }
+                    };
+                    obj.sendToSession(sessionid, myparent, cachedMsg, grandparent);
+                    break;
+                }
+
+                obj.capabilityQueueSession(nodeid, sessionid);
+                obj.requestSettingsCapabilityFromAgent(nodeid);
+                break;
+            }
             case 'exportResult': {
                 var node = myparent.dbNodeKey;
                 obj.debug('omniossendlogs', 'exportResult received from agent:', node, 'success:', command.success);
@@ -170,6 +284,25 @@ module.exports.omniossendlogs = function (parent) {
                 obj.debug('omniossendlogs', 'exportResult: flushing to pending sessions');
                 obj.flushPending(node, outMsg, grandparent);
                 obj.inflight[node] = false;
+                break;
+            }
+            case 'settingsCapabilityResult': {
+                var node = myparent.dbNodeKey;
+                obj.debug('omniossendlogs', 'settingsCapabilityResult received from agent:', node, 'supported:', command.supported);
+                if (!node) {
+                    obj.debug('omniossendlogs', 'settingsCapabilityResult: no node');
+                    return;
+                }
+                obj.capabilityCache[node] = !!command.supported;
+                obj.capabilityInflight[node] = false;
+                var outMsg = {
+                    action: 'plugin',
+                    plugin: 'omniossendlogs',
+                    method: 'settingsCapabilityResult',
+                    data: { nodeid: node, supported: obj.capabilityCache[node] }
+                };
+                obj.debug('omniossendlogs', 'settingsCapabilityResult: flushing to pending sessions');
+                obj.capabilityFlushPending(node, outMsg, grandparent);
                 break;
             }
             default:
@@ -237,12 +370,31 @@ module.exports.omniossendlogs = function (parent) {
             }
         }
 
+        // "Export Settings" is additionally gated on the agent having
+        // confirmed support (see onDeviceRefreshEnd/settingsCapabilityResult)
+        // - disabled while unknown/unsupported, on top of the "running" gate
+        // the other two links use, so it can never be clicked into a doomed
+        // export on an old Launchpad.
+        pluginHandler.omniossendlogs.settingsCapability = pluginHandler.omniossendlogs.settingsCapability || {};
+        var settingsSupported = pluginHandler.omniossendlogs.settingsCapability[currentNode._id];
+        var settingsLinkStyle = linkStyle;
+        var settingsTitleAttr = '';
+        if (settingsSupported !== true) {
+            settingsLinkStyle = 'pointer-events:none;opacity:0.5;';
+            settingsTitleAttr = settingsSupported === false
+                ? ' title="Requires a newer Launchpad on this device (no --settings-only support)"'
+                : ' title="Checking Launchpad support..."';
+        }
+        var settingsLinkHtml = '&nbsp;&nbsp;<a href="#" style="' + settingsLinkStyle + '"' + settingsTitleAttr +
+            ' onclick="pluginHandler.omniossendlogs.triggerExportSettings(); return false;">Export Settings</a>';
+
         // If row exists, update it and exit (prevents flickering and deletion issues)
         if (existingRow) {
             var contentCell = existingRow.querySelector('td:nth-child(2)');
             if (contentCell) {
                 contentCell.innerHTML = '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' +
                     '&nbsp;&nbsp;<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExportTrajectories(); return false;">Export Trajectories</a>' +
+                    settingsLinkHtml +
                     statusHtml;
             }
             return;
@@ -281,6 +433,7 @@ module.exports.omniossendlogs = function (parent) {
         var rowHtml = '<tr id="omniossendlogsTableRow"><td class="style7">Export</td><td class="style9">' +
             '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' +
             '&nbsp;&nbsp;<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExportTrajectories(); return false;">Export Trajectories</a>' +
+            settingsLinkHtml +
             statusHtml +
             '</td></tr>';
 
@@ -427,6 +580,73 @@ module.exports.omniossendlogs = function (parent) {
         return false;
     };
 
+    obj.triggerExportSettings = function () {
+        console.log('[omniossendlogs] triggerExportSettings called');
+        if (typeof meshserver === 'undefined' || typeof currentNode === 'undefined' || !currentNode) {
+            console.log('[omniossendlogs] meshserver or currentNode undefined');
+            return false;
+        }
+
+        // Defense in depth: pointer-events:none in injectGeneral should
+        // already prevent this click while support isn't confirmed, but the
+        // handler must not rely on CSS alone.
+        pluginHandler.omniossendlogs.settingsCapability = pluginHandler.omniossendlogs.settingsCapability || {};
+        if (pluginHandler.omniossendlogs.settingsCapability[currentNode._id] !== true) {
+            console.log('[omniossendlogs] triggerExportSettings: capability not confirmed, ignoring click');
+            return false;
+        }
+
+        pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
+        var status = pluginHandler.omniossendlogs.exportStatus[currentNode._id];
+        if (status && status.status === 'running') {
+            console.log('[omniossendlogs] Export already running');
+            return false;
+        }
+
+        var nodeId = currentNode._id;
+
+        pluginHandler.omniossendlogs.exportStatus[nodeId] = {
+            status: 'running',
+            message: 'Settings export started...',
+            time: Date.now()
+        };
+        pluginHandler.omniossendlogs.injectGeneral();
+
+        console.log('[omniossendlogs] Sending triggerExportSettings request for node:', nodeId);
+        meshserver.send({
+            action: 'plugin',
+            plugin: 'omniossendlogs',
+            pluginaction: 'triggerExportSettings',
+            nodeid: nodeId
+        });
+
+        setTimeout(function () {
+            var s = pluginHandler.omniossendlogs.exportStatus[nodeId];
+            if (s && s.status === 'running') {
+                console.log('[omniossendlogs] Settings export timed out for node:', nodeId);
+                pluginHandler.omniossendlogs.exportStatus[nodeId] = {
+                    status: 'error',
+                    message: 'Timeout: No response',
+                    time: Date.now()
+                };
+                if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === nodeId) {
+                    pluginHandler.omniossendlogs.injectGeneral();
+                }
+                setTimeout(function () {
+                    var errStatus = pluginHandler.omniossendlogs.exportStatus[nodeId];
+                    if (errStatus && errStatus.status === 'error' && errStatus.message === 'Timeout: No response') {
+                        delete pluginHandler.omniossendlogs.exportStatus[nodeId];
+                        if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === nodeId) {
+                            pluginHandler.omniossendlogs.injectGeneral();
+                        }
+                    }
+                }, 10000);
+            }
+        }, 60000);
+
+        return false;
+    };
+
     obj.exportResult = function (state, msg) {
         console.log('[omniossendlogs] exportResult received:', msg);
         if (!msg || !msg.data || !msg.data.nodeid) {
@@ -460,6 +680,21 @@ module.exports.omniossendlogs = function (parent) {
         }
     };
 
+    obj.settingsCapabilityResult = function (state, msg) {
+        console.log('[omniossendlogs] settingsCapabilityResult received:', msg);
+        if (!msg || !msg.data || !msg.data.nodeid) {
+            console.log('[omniossendlogs] settingsCapabilityResult: invalid message structure');
+            return;
+        }
+
+        pluginHandler.omniossendlogs.settingsCapability = pluginHandler.omniossendlogs.settingsCapability || {};
+        pluginHandler.omniossendlogs.settingsCapability[msg.data.nodeid] = !!msg.data.supported;
+
+        if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === msg.data.nodeid) {
+            pluginHandler.omniossendlogs.injectGeneral();
+        }
+    };
+
     obj.onDeviceRefreshEnd = function () {
         console.log('[omniossendlogs] onDeviceRefreshEnd called, currentNode:',
             (typeof currentNode !== 'undefined' && currentNode) ? currentNode._id : 'undefined');
@@ -469,6 +704,25 @@ module.exports.omniossendlogs = function (parent) {
         }
         pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
         pluginHandler.omniossendlogs.injectGeneral();
+
+        // Ask the agent (once per node) whether "Export Settings" is
+        // supported, so the button starts disabled and only becomes
+        // clickable once support is confirmed - see triggerExportSettings.
+        pluginHandler.omniossendlogs.settingsCapability = pluginHandler.omniossendlogs.settingsCapability || {};
+        pluginHandler.omniossendlogs.settingsCapabilityAsked = pluginHandler.omniossendlogs.settingsCapabilityAsked || {};
+        if (typeof currentNode !== 'undefined' && currentNode && currentNode._id) {
+            var nid = currentNode._id;
+            if (pluginHandler.omniossendlogs.settingsCapability[nid] === undefined && !pluginHandler.omniossendlogs.settingsCapabilityAsked[nid]) {
+                pluginHandler.omniossendlogs.settingsCapabilityAsked[nid] = true;
+                console.log('[omniossendlogs] Requesting settings capability check for node:', nid);
+                meshserver.send({
+                    action: 'plugin',
+                    plugin: 'omniossendlogs',
+                    pluginaction: 'checkSettingsCapability',
+                    nodeid: nid
+                });
+            }
+        }
     };
 
     // --- admin panel stub (not used) ---
