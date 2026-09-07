@@ -56,7 +56,7 @@ function consoleaction(args, rights, sessionid, parent) {
             break;
         case 'runExportSettings':
             dbg('runExportSettings action called');
-            runExportCommand('--settings-only');
+            runExportCommand("--settings-only --reason 'settings backup'");
             break;
         case 'checkSettingsCapability':
             dbg('checkSettingsCapability action called');
