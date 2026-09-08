@@ -42,14 +42,26 @@ function consoleaction(args, rights, sessionid, parent) {
     dbg('consoleaction called with action: ' + fnname);
 
     switch (fnname) {
-        case 'runExport':
-            dbg('runExport action called');
-            probeExportCapabilities(function (caps) {
-                var windowArg = caps.supports30m ? '30m' : (caps.supports2h ? '2h' : '1');
-                dbg('runExport: window arg chosen: ' + windowArg + ' (caps: ' + JSON.stringify(caps) + ')');
-                runExportCommand('-l ' + windowArg);
-            });
+        case 'runExport': {
+            // A window explicitly picked from the UI (30/60/120 min buttons,
+            // only shown once arbitraryWindow support is confirmed) skips
+            // the probe entirely - that value space is already known-good.
+            // Re-validated here (not just trusted from the server) in case
+            // the two ever disagree about the allowlist.
+            var explicitWindow = /^(30|60|120)m$/.test(args.window) ? args.window : null;
+            if (explicitWindow) {
+                dbg('runExport: explicit window requested: ' + explicitWindow);
+                runExportCommand('-l ' + explicitWindow);
+            } else {
+                dbg('runExport action called (no explicit window, probing capabilities)');
+                probeExportCapabilities(function (caps) {
+                    var windowArg = caps.supports30m ? '30m' : (caps.supports2h ? '2h' : '1');
+                    dbg('runExport: window arg chosen: ' + windowArg + ' (caps: ' + JSON.stringify(caps) + ')');
+                    runExportCommand('-l ' + windowArg);
+                });
+            }
             break;
+        }
         case 'runExportTrajectories':
             dbg('runExportTrajectories action called');
             runExportCommand('-t yes -l 1');
@@ -58,14 +70,15 @@ function consoleaction(args, rights, sessionid, parent) {
             dbg('runExportSettings action called');
             runExportCommand("--settings-only --reason 'settings backup'");
             break;
-        case 'checkSettingsCapability':
-            dbg('checkSettingsCapability action called');
+        case 'checkExportCapabilities':
+            dbg('checkExportCapabilities action called');
             probeExportCapabilities(function (caps) {
                 sendToServer({
                     action: 'plugin',
                     plugin: 'omniossendlogs',
-                    pluginaction: 'settingsCapabilityResult',
-                    supported: caps.supportsSettingsOnly
+                    pluginaction: 'exportCapabilitiesResult',
+                    settingsOnly: caps.supportsSettingsOnly,
+                    arbitraryWindow: caps.supportsArbitraryWindow
                 });
             });
             break;
@@ -155,7 +168,7 @@ function probeExportCapabilities(callback, force) {
     try {
         if (!fs.existsSync(EXPORT_SCRIPT)) {
             dbg('probeExportCapabilities: script not found: ' + EXPORT_SCRIPT);
-            var missing = { supports30m: false, supports2h: false, supportsSettingsOnly: false };
+            var missing = { supports30m: false, supports2h: false, supportsSettingsOnly: false, supportsArbitraryWindow: false };
             db.Put(CAPABILITY_CACHE_KEY, missing);
             callback(missing);
             return;
@@ -180,7 +193,12 @@ function probeExportCapabilities(callback, force) {
             var caps = {
                 supports30m: stdout.indexOf('30m') !== -1,
                 supports2h: stdout.indexOf('2h') !== -1,
-                supportsSettingsOnly: stdout.indexOf('--settings-only') !== -1
+                supportsSettingsOnly: stdout.indexOf('--settings-only') !== -1,
+                // --log-window is the flag name introduced in the same
+                // Launchpad change as the full ISO-8601 grammar - its
+                // presence means any window value (not just the 30m/2h
+                // legacy shorthand) is accepted, e.g. 60m/120m.
+                supportsArbitraryWindow: stdout.indexOf('--log-window') !== -1
             };
             dbg('probeExportCapabilities: result: ' + JSON.stringify(caps));
             db.Put(CAPABILITY_CACHE_KEY, caps);
@@ -189,12 +207,12 @@ function probeExportCapabilities(callback, force) {
 
         proc.on('error', function (err) {
             dbg('probeExportCapabilities: process error: ' + err.toString());
-            var errored = { supports30m: false, supports2h: false, supportsSettingsOnly: false };
+            var errored = { supports30m: false, supports2h: false, supportsSettingsOnly: false, supportsArbitraryWindow: false };
             callback(errored);
         });
     } catch (e) {
         dbg('probeExportCapabilities: exception: ' + e.toString());
-        callback({ supports30m: false, supports2h: false, supportsSettingsOnly: false });
+        callback({ supports30m: false, supports2h: false, supportsSettingsOnly: false, supportsArbitraryWindow: false });
     }
 }
 
