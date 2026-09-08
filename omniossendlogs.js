@@ -25,7 +25,8 @@ module.exports.omniossendlogs = function (parent) {
     // Client-side state (initialized when running in browser)
     obj.exportStatus = {}; // nodeid => { status, message, time }
     obj.settingsCapability = {}; // nodeid => true|false|undefined
-    obj.settingsCapabilityAsked = {}; // nodeid => boolean
+    obj.windowCapability = {}; // nodeid => true|false|undefined (arbitrary log window support)
+    obj.exportCapabilitiesAsked = {}; // nodeid => boolean
 
     obj.exports = [
         'onDeviceRefreshEnd',
@@ -33,7 +34,7 @@ module.exports.omniossendlogs = function (parent) {
         'triggerExport',
         'triggerExportTrajectories',
         'triggerExportSettings',
-        'settingsCapabilityResult',
+        'exportCapabilitiesResult',
         'injectGeneral',
         'escapeHtml'
     ];
@@ -84,8 +85,8 @@ module.exports.omniossendlogs = function (parent) {
         }
     };
 
-    obj.requestExportFromAgent = function (nodeid) {
-        obj.debug('omniossendlogs', 'requestExportFromAgent called for:', nodeid);
+    obj.requestExportFromAgent = function (nodeid, window) {
+        obj.debug('omniossendlogs', 'requestExportFromAgent called for:', nodeid, 'window:', window);
         if (!nodeid) { obj.debug('omniossendlogs', 'requestExportFromAgent: no nodeid'); return; }
         if (obj.inflight[nodeid]) { obj.debug('omniossendlogs', 'requestExportFromAgent: already inflight for', nodeid); return; }
         obj.inflight[nodeid] = true;
@@ -97,7 +98,7 @@ module.exports.omniossendlogs = function (parent) {
         }
         try {
             obj.debug('omniossendlogs', 'requestExportFromAgent: sending runExport command to', nodeid);
-            agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'runExport' }));
+            agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'runExport', window: window }));
         } catch (e) {
             obj.debug('omniossendlogs', 'requestExportFromAgent: error sending to agent', nodeid, e);
             obj.inflight[nodeid] = false;
@@ -144,31 +145,31 @@ module.exports.omniossendlogs = function (parent) {
         }
     };
 
-    obj.requestSettingsCapabilityFromAgent = function (nodeid) {
-        obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent called for:', nodeid);
-        if (!nodeid) { obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: no nodeid'); return; }
-        if (obj.capabilityInflight[nodeid]) { obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: already inflight for', nodeid); return; }
+    obj.requestExportCapabilitiesFromAgent = function (nodeid) {
+        obj.debug('omniossendlogs', 'requestExportCapabilitiesFromAgent called for:', nodeid);
+        if (!nodeid) { obj.debug('omniossendlogs', 'requestExportCapabilitiesFromAgent: no nodeid'); return; }
+        if (obj.capabilityInflight[nodeid]) { obj.debug('omniossendlogs', 'requestExportCapabilitiesFromAgent: already inflight for', nodeid); return; }
         obj.capabilityInflight[nodeid] = true;
         var agent = obj.meshServer.webserver.wsagents[nodeid];
         if (agent == null) {
-            obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: agent not found for', nodeid);
+            obj.debug('omniossendlogs', 'requestExportCapabilitiesFromAgent: agent not found for', nodeid);
             obj.capabilityInflight[nodeid] = false;
             return;
         }
         try {
-            obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: sending checkSettingsCapability command to', nodeid);
-            agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'checkSettingsCapability' }));
+            obj.debug('omniossendlogs', 'requestExportCapabilitiesFromAgent: sending checkExportCapabilities command to', nodeid);
+            agent.send(JSON.stringify({ action: 'plugin', plugin: 'omniossendlogs', pluginaction: 'checkExportCapabilities' }));
             // If the agent never answers (message lost, agent disconnects
             // mid-request), don't leave this node permanently stuck
             // "in flight" - that would silently block every future check.
             setTimeout(function () {
                 if (obj.capabilityInflight[nodeid]) {
-                    obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: timed out waiting for', nodeid);
+                    obj.debug('omniossendlogs', 'requestExportCapabilitiesFromAgent: timed out waiting for', nodeid);
                     obj.capabilityInflight[nodeid] = false;
                 }
             }, 30000);
         } catch (e) {
-            obj.debug('omniossendlogs', 'requestSettingsCapabilityFromAgent: error sending to agent', nodeid, e);
+            obj.debug('omniossendlogs', 'requestExportCapabilitiesFromAgent: error sending to agent', nodeid, e);
             obj.capabilityInflight[nodeid] = false;
         }
     };
@@ -196,6 +197,12 @@ module.exports.omniossendlogs = function (parent) {
                 // Resolve session ID: browser does not send it explicitly, so derive from the WS connection
                 var sessionid = command.sessionid || (myparent.ws && myparent.ws.sessionId);
                 obj.debug('omniossendlogs', 'triggerExport: sessionid resolved as:', sessionid);
+                // The window buttons only exist once arbitraryWindow support
+                // is confirmed, but a WS client could send anything here
+                // directly - this ends up in a shell command on the agent,
+                // so only ever forward one of the exact literals we offer.
+                var allowedWindows = ['30m', '60m', '120m'];
+                var window = allowedWindows.indexOf(command.window) !== -1 ? command.window : undefined;
                 // Send immediate "running" status
                 var runningMsg = {
                     action: 'plugin',
@@ -205,7 +212,7 @@ module.exports.omniossendlogs = function (parent) {
                 };
                 obj.sendToSession(sessionid, myparent, runningMsg, grandparent);
                 obj.queueSession(nodeid, sessionid);
-                obj.requestExportFromAgent(nodeid);
+                obj.requestExportFromAgent(nodeid, window);
                 break;
             }
             case 'triggerExportTrajectories': {
@@ -248,11 +255,11 @@ module.exports.omniossendlogs = function (parent) {
                 obj.requestExportSettingsFromAgent(nodeid);
                 break;
             }
-            case 'checkSettingsCapability': {
+            case 'checkExportCapabilities': {
                 var nodeid = command.nodeid || myparent.dbNodeKey;
-                obj.debug('omniossendlogs', 'checkSettingsCapability request for node:', nodeid);
+                obj.debug('omniossendlogs', 'checkExportCapabilities request for node:', nodeid);
                 if (!nodeid) {
-                    obj.debug('omniossendlogs', 'checkSettingsCapability: no nodeid');
+                    obj.debug('omniossendlogs', 'checkExportCapabilities: no nodeid');
                     return;
                 }
                 var sessionid = command.sessionid || (myparent.ws && myparent.ws.sessionId);
@@ -264,7 +271,7 @@ module.exports.omniossendlogs = function (parent) {
                 // agent had this code, or before Launchpad had the flag)
                 // would stay wrong forever with no way to recover.
                 obj.capabilityQueueSession(nodeid, sessionid);
-                obj.requestSettingsCapabilityFromAgent(nodeid);
+                obj.requestExportCapabilitiesFromAgent(nodeid);
                 break;
             }
             case 'exportResult': {
@@ -294,22 +301,26 @@ module.exports.omniossendlogs = function (parent) {
                 obj.inflight[node] = false;
                 break;
             }
-            case 'settingsCapabilityResult': {
+            case 'exportCapabilitiesResult': {
                 var node = myparent.dbNodeKey;
-                obj.debug('omniossendlogs', 'settingsCapabilityResult received from agent:', node, 'supported:', command.supported);
+                obj.debug('omniossendlogs', 'exportCapabilitiesResult received from agent:', node,
+                    'settingsOnly:', command.settingsOnly, 'arbitraryWindow:', command.arbitraryWindow);
                 if (!node) {
-                    obj.debug('omniossendlogs', 'settingsCapabilityResult: no node');
+                    obj.debug('omniossendlogs', 'exportCapabilitiesResult: no node');
                     return;
                 }
-                var supported = !!command.supported;
                 obj.capabilityInflight[node] = false;
                 var outMsg = {
                     action: 'plugin',
                     plugin: 'omniossendlogs',
-                    method: 'settingsCapabilityResult',
-                    data: { nodeid: node, supported: supported }
+                    method: 'exportCapabilitiesResult',
+                    data: {
+                        nodeid: node,
+                        settingsOnly: !!command.settingsOnly,
+                        arbitraryWindow: !!command.arbitraryWindow
+                    }
                 };
-                obj.debug('omniossendlogs', 'settingsCapabilityResult: flushing to pending sessions');
+                obj.debug('omniossendlogs', 'exportCapabilitiesResult: flushing to pending sessions');
                 obj.capabilityFlushPending(node, outMsg, grandparent);
                 break;
             }
@@ -379,9 +390,9 @@ module.exports.omniossendlogs = function (parent) {
         }
 
         // "Export Settings" is additionally gated on the agent having
-        // confirmed support (see onDeviceRefreshEnd/settingsCapabilityResult)
+        // confirmed support (see onDeviceRefreshEnd/exportCapabilitiesResult)
         // - disabled while unknown/unsupported, on top of the "running" gate
-        // the other two links use, so it can never be clicked into a doomed
+        // the other links use, so it can never be clicked into a doomed
         // export on an old Launchpad.
         pluginHandler.omniossendlogs.settingsCapability = pluginHandler.omniossendlogs.settingsCapability || {};
         var settingsSupported = pluginHandler.omniossendlogs.settingsCapability[currentNode._id];
@@ -396,11 +407,27 @@ module.exports.omniossendlogs = function (parent) {
         var settingsLinkHtml = '&nbsp;&nbsp;<a href="#" style="' + settingsLinkStyle + '"' + settingsTitleAttr +
             ' onclick="pluginHandler.omniossendlogs.triggerExportSettings(); return false;">Export Settings</a>';
 
+        // Once the agent confirms arbitrary log-window support, offer the
+        // three fixed durations directly instead of leaving the agent to
+        // pick one via its own probe-based cascade - no per-link gating
+        // needed beyond this single check, since all three values are
+        // already known-good once arbitraryWindow is true.
+        pluginHandler.omniossendlogs.windowCapability = pluginHandler.omniossendlogs.windowCapability || {};
+        var exportLogsHtml;
+        if (pluginHandler.omniossendlogs.windowCapability[currentNode._id] === true) {
+            exportLogsHtml =
+                '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(\'30m\'); return false;">Export Logs (last 30 min)</a>' +
+                '&nbsp;<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(\'60m\'); return false;">(last 60 min)</a>' +
+                '&nbsp;<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(\'120m\'); return false;">(last 120 min)</a>';
+        } else {
+            exportLogsHtml = '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>';
+        }
+
         // If row exists, update it and exit (prevents flickering and deletion issues)
         if (existingRow) {
             var contentCell = existingRow.querySelector('td:nth-child(2)');
             if (contentCell) {
-                contentCell.innerHTML = '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' +
+                contentCell.innerHTML = exportLogsHtml +
                     '&nbsp;&nbsp;<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExportTrajectories(); return false;">Export Trajectories</a>' +
                     settingsLinkHtml +
                     statusHtml;
@@ -439,7 +466,7 @@ module.exports.omniossendlogs = function (parent) {
 
         // Create the export row HTML
         var rowHtml = '<tr id="omniossendlogsTableRow"><td class="style7">Export</td><td class="style9">' +
-            '<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExport(); return false;">Export Logs</a>' +
+            exportLogsHtml +
             '&nbsp;&nbsp;<a href="#" style="' + linkStyle + '" onclick="pluginHandler.omniossendlogs.triggerExportTrajectories(); return false;">Export Trajectories</a>' +
             settingsLinkHtml +
             statusHtml +
@@ -464,8 +491,8 @@ module.exports.omniossendlogs = function (parent) {
         }
     };
 
-    obj.triggerExport = function () {
-        console.log('[omniossendlogs] triggerExport called');
+    obj.triggerExport = function (window) {
+        console.log('[omniossendlogs] triggerExport called, window:', window);
         if (typeof meshserver === 'undefined' || typeof currentNode === 'undefined' || !currentNode) {
             console.log('[omniossendlogs] meshserver or currentNode undefined');
             return false;
@@ -489,13 +516,16 @@ module.exports.omniossendlogs = function (parent) {
         };
         pluginHandler.omniossendlogs.injectGeneral();
 
-        // Send request to server
+        // Send request to server. window is undefined for the plain
+        // single-button fallback path - JSON.stringify just omits it, so
+        // the message shape there is unchanged from before this feature.
         console.log('[omniossendlogs] Sending triggerExport request for node:', nodeId);
         meshserver.send({
             action: 'plugin',
             plugin: 'omniossendlogs',
             pluginaction: 'triggerExport',
-            nodeid: nodeId
+            nodeid: nodeId,
+            window: window
         });
 
         // Timeout handler to clear "Running" state if no response
@@ -688,15 +718,17 @@ module.exports.omniossendlogs = function (parent) {
         }
     };
 
-    obj.settingsCapabilityResult = function (state, msg) {
-        console.log('[omniossendlogs] settingsCapabilityResult received:', msg);
+    obj.exportCapabilitiesResult = function (state, msg) {
+        console.log('[omniossendlogs] exportCapabilitiesResult received:', msg);
         if (!msg || !msg.data || !msg.data.nodeid) {
-            console.log('[omniossendlogs] settingsCapabilityResult: invalid message structure');
+            console.log('[omniossendlogs] exportCapabilitiesResult: invalid message structure');
             return;
         }
 
         pluginHandler.omniossendlogs.settingsCapability = pluginHandler.omniossendlogs.settingsCapability || {};
-        pluginHandler.omniossendlogs.settingsCapability[msg.data.nodeid] = !!msg.data.supported;
+        pluginHandler.omniossendlogs.settingsCapability[msg.data.nodeid] = !!msg.data.settingsOnly;
+        pluginHandler.omniossendlogs.windowCapability = pluginHandler.omniossendlogs.windowCapability || {};
+        pluginHandler.omniossendlogs.windowCapability[msg.data.nodeid] = !!msg.data.arbitraryWindow;
 
         if (typeof currentNode !== 'undefined' && currentNode && currentNode._id === msg.data.nodeid) {
             pluginHandler.omniossendlogs.injectGeneral();
@@ -713,20 +745,22 @@ module.exports.omniossendlogs = function (parent) {
         pluginHandler.omniossendlogs.exportStatus = pluginHandler.omniossendlogs.exportStatus || {};
         pluginHandler.omniossendlogs.injectGeneral();
 
-        // Ask the agent (once per node) whether "Export Settings" is
-        // supported, so the button starts disabled and only becomes
-        // clickable once support is confirmed - see triggerExportSettings.
+        // Ask the agent (once per node) whether "Export Settings" and the
+        // arbitrary log-window durations are supported, so those UI
+        // elements start disabled/collapsed and only unlock once support is
+        // confirmed - see triggerExportSettings and the exportLogsHtml
+        // branch in injectGeneral.
         pluginHandler.omniossendlogs.settingsCapability = pluginHandler.omniossendlogs.settingsCapability || {};
-        pluginHandler.omniossendlogs.settingsCapabilityAsked = pluginHandler.omniossendlogs.settingsCapabilityAsked || {};
+        pluginHandler.omniossendlogs.exportCapabilitiesAsked = pluginHandler.omniossendlogs.exportCapabilitiesAsked || {};
         if (typeof currentNode !== 'undefined' && currentNode && currentNode._id) {
             var nid = currentNode._id;
-            if (pluginHandler.omniossendlogs.settingsCapability[nid] === undefined && !pluginHandler.omniossendlogs.settingsCapabilityAsked[nid]) {
-                pluginHandler.omniossendlogs.settingsCapabilityAsked[nid] = true;
-                console.log('[omniossendlogs] Requesting settings capability check for node:', nid);
+            if (pluginHandler.omniossendlogs.settingsCapability[nid] === undefined && !pluginHandler.omniossendlogs.exportCapabilitiesAsked[nid]) {
+                pluginHandler.omniossendlogs.exportCapabilitiesAsked[nid] = true;
+                console.log('[omniossendlogs] Requesting export capabilities check for node:', nid);
                 meshserver.send({
                     action: 'plugin',
                     plugin: 'omniossendlogs',
-                    pluginaction: 'checkSettingsCapability',
+                    pluginaction: 'checkExportCapabilities',
                     nodeid: nid
                 });
             }
