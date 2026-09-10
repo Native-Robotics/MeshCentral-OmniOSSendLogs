@@ -155,7 +155,9 @@ function readCachedCapabilities() {
 function probeExportCapabilities(callback, force) {
     if (!force) {
         var cached = readCachedCapabilities();
-        if (cached) {
+        // Older plugin versions persisted capabilities without this flag.
+        // Reprobe those entries; false is valid for older Launchpad builds.
+        if (cached && typeof cached.supportsArbitraryWindow === 'boolean') {
             dbg('probeExportCapabilities: using cached result: ' + JSON.stringify(cached));
             callback(cached);
             return;

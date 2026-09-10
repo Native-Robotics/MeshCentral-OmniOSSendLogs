@@ -16,6 +16,10 @@ Plugin that adds buttons to send OmniOS and apps logs, and OmniOS settings, to a
 1. Copy the `MeshCentral-OmniOSSendLogs` folder into the MeshCentral plugins directory.
 2. Restart MeshCentral to load the plugin.
 
+Version 1.2.15 refreshes capability caches created before arbitrary log-window detection was added, so supported devices show the 30/60/120-minute links after upgrading without manually clearing agent storage.
+
+When updating an existing installation, reload the plugin, run `distributeCore()` from the MeshCentral admin browser console, wait a few seconds, then fully reload the device page to load the updated browser code.
+
 ## Usage
 
 - Open a device on "My Devices" → General tab.
@@ -37,3 +41,11 @@ The Python interpreter and script path can be changed in `modules_meshcore/omnio
 ## Support
 
 - Code comments and log messages are in English.
+
+## Development
+
+Run the capability-cache regression tests with Node.js 18 or newer:
+
+```sh
+node --test tests/capability-cache.test.js
+```
