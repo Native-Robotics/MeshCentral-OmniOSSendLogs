@@ -1,306 +1,154 @@
-/**
- * @description MeshCentral Log Exporter plugin (agent side)
- * Executes export command and reports result to server.
- */
-
+/** MeshCentral OmniOS export agent. Runs named Launchpad operations. */
 "use strict";
-var mesh;
-var _sessionid;
-var isWsconnection = false;
 var db = require('SimpleDataStore').Shared();
-
-// Command to execute for log export - direct python call
 var PYTHON_BIN = '/usr/bin/python3';
 var EXPORT_SCRIPT = '/home/user/launchpad/pages/data/export_data.py';
-var EXPORT_CWD = '/home/user/launchpad';  // Working directory for export script
-
+var EXPORT_CWD = '/home/user/launchpad';
 var CAPABILITY_CACHE_KEY = 'plugin_omniossendlogs_capabilities_cache';
+var CAPABILITY_TTL_MS = 5 * 60 * 1000;
+var probeWaiters = null;
+var exportBusy = false;
 
-function dbg(msg) {
-    try {
-        require('MeshAgent').SendCommand({ action: 'msg', type: 'console', value: '[omniossendlogs-agent] ' + msg });
-    } catch (e) { }
+function dbg(message) {
+    try { require('MeshAgent').SendCommand({ action: 'msg', type: 'console', value: '[omniossendlogs-agent] ' + message }); } catch (e) { }
 }
 
 function consoleaction(args, rights, sessionid, parent) {
-    isWsconnection = false;
-    _sessionid = sessionid;
-
-    // Safe check and initialization of args['_']
-    if (typeof args['_'] == 'undefined') {
-        args['_'] = [];
-        args['_'][1] = args.pluginaction;
-        args['_'][2] = null;
-        args['_'][3] = null;
-        args['_'][4] = null;
-        isWsconnection = true;
+    var action = args.pluginaction || (args['_'] && args['_'][1]);
+    var requestId = typeof args.requestId === 'string' ? args.requestId : undefined;
+    function reply(resultAction, data) {
+        data.action = 'plugin';
+        data.plugin = 'omniossendlogs';
+        data.pluginaction = resultAction;
+        data.requestId = requestId;
+        data.sessionid = sessionid;
+        try { parent.SendCommand(data); } catch (e) { dbg('Reply failed: ' + e); }
     }
-
-    var fnname = args['_'][1];
-    mesh = parent;
-
-    dbg('consoleaction called with action: ' + fnname);
-
-    switch (fnname) {
-        case 'runExport': {
-            // A window explicitly picked from the UI (30/60/120 min buttons,
-            // only shown once arbitraryWindow support is confirmed) skips
-            // the probe entirely - that value space is already known-good.
-            // Re-validated here (not just trusted from the server) in case
-            // the two ever disagree about the allowlist.
-            var explicitWindow = /^(30|60|120)m$/.test(args.window) ? args.window : null;
-            if (explicitWindow) {
-                dbg('runExport: explicit window requested: ' + explicitWindow);
-                runExportCommand('-l ' + explicitWindow);
-            } else {
-                dbg('runExport action called (no explicit window, probing capabilities)');
-                probeExportCapabilities(function (caps) {
-                    var windowArg = caps.supports30m ? '30m' : (caps.supports2h ? '2h' : '1');
-                    dbg('runExport: window arg chosen: ' + windowArg + ' (caps: ' + JSON.stringify(caps) + ')');
-                    runExportCommand('-l ' + windowArg);
-                });
-            }
-            break;
-        }
-        case 'runExportTrajectories':
-            dbg('runExportTrajectories action called');
-            runExportCommand('-t yes -l 1');
-            break;
-        case 'runExportSettings':
-            dbg('runExportSettings action called');
-            runExportCommand("--settings-only --reason 'settings backup'");
-            break;
-        case 'checkExportCapabilities':
-            dbg('checkExportCapabilities action called');
-            probeExportCapabilities(function (caps) {
-                sendToServer({
-                    action: 'plugin',
-                    plugin: 'omniossendlogs',
-                    pluginaction: 'exportCapabilitiesResult',
-                    settingsOnly: caps.supportsSettingsOnly,
-                    arbitraryWindow: caps.supportsArbitraryWindow
-                });
+    if (action === 'checkExportCapabilities') {
+        probeExportCapabilities(function (caps, error) {
+            reply('exportCapabilitiesResult', error ? { error: error } : {
+                settingsOnly: caps.supportsSettingsOnly, arbitraryWindow: caps.supportsArbitraryWindow
             });
-            break;
-        default:
-            dbg('Unknown action: ' + fnname);
-            break;
+        }, args.force === true);
+        return;
     }
+    if (['runExport', 'runExportTrajectories', 'runExportSettings'].indexOf(action) === -1) return;
+    // routeToNode also reaches this handler; view-only access cannot run commands.
+    if (typeof rights !== 'number' || (rights & 16) === 0) {
+        reply('exportResult', { success: false, message: 'Access denied: Agent Console permission required' });
+        return;
+    }
+    if (exportBusy) {
+        reply('exportResult', { success: false, message: 'Another export is still running on this device' });
+        return;
+    }
+    exportBusy = true;
+    function finish(error) {
+        exportBusy = false;
+        reply('exportResult', { success: !error, message: error || 'Export completed successfully' });
+    }
+    function run(extraArgs) {
+        dbg('Export arguments: ' + extraArgs);
+        runPython('--mode server ' + extraArgs, 0, function (stdout, error) { finish(error); });
+    }
+    if (action === 'runExportTrajectories') { run('-t yes -l 1'); return; }
+    var window = ['30m', '60m', '120m'].indexOf(args.window) !== -1 ? args.window : null;
+    probeExportCapabilities(function (caps, error) {
+        if (error) { finish(error); return; }
+        if (action === 'runExportSettings') {
+            if (!caps.supportsSettingsOnly) { finish('This Launchpad does not support settings-only export'); return; }
+            run("--settings-only --reason 'settings backup'");
+        } else if (window) {
+            if (!caps.supportsArbitraryWindow) { finish('This Launchpad does not support an explicit log window; refresh export capabilities'); return; }
+            run('-l ' + window);
+        } else {
+            run('-l ' + (caps.supports30m ? '30m' : (caps.supports2h ? '2h' : '1')));
+        }
+    });
 }
 
-// Builds the "su - user -c '...'" argv used to run export_data.py, shared by
-// a real export and the --help capability probe: both need the same shell
-// setup (login profile for PATH/pyenv, SERIAL, PYTHONPATH for func/libs)
-// since export_data.py imports func.* at module scope, before argparse ever
-// sees --help.
+function shellQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 function buildExportSuArgv(pythonArgs) {
     var fs = require('fs');
-    var username = 'user';
-    var cmdParts = [];
-
-    // 0. Source user profile to get full login environment (PATH, pyenv, etc.)
-    //    Same as manually running: source ~/.profile
-    cmdParts.push('. /home/' + username + '/.profile || true');
-
-    // 1. Change directory
-    cmdParts.push('cd ' + EXPORT_CWD);
-
-    // 2. Read SERIAL from personal_config.sh and export it
+    var cmd = ['. /home/user/.profile || true', 'cd ' + shellQuote(EXPORT_CWD)];
     try {
-        var configBuffer = fs.readFileSync('/home/user/keys/personal_config.sh');
-        var configContent = (typeof configBuffer === 'string') ? configBuffer : String.fromCharCode.apply(null, configBuffer);
-        var serialMatch = configContent.match(/SERIAL=(\S+)/);
-        if (serialMatch && serialMatch[1]) {
-            cmdParts.push('export SERIAL=\'' + serialMatch[1] + '\'');
-            dbg('SERIAL set to: ' + serialMatch[1]);
-        } else {
-            dbg('Warning: SERIAL not found in personal_config.sh');
+        var content = fs.readFileSync('/home/user/keys/personal_config.sh').toString();
+        var serial = content.match(/^\s*(?:export\s+)?SERIAL=(.*)$/m);
+        if (serial) {
+            var value = serial[1].trim();
+            if ((value.charAt(0) === '"' && value.slice(-1) === '"') ||
+                (value.charAt(0) === "'" && value.slice(-1) === "'")) value = value.slice(1, -1);
+            cmd.push('export SERIAL=' + shellQuote(value));
         }
-    } catch (e) {
-        dbg('Warning: Could not read SERIAL from personal_config.sh: ' + e.toString());
-    }
-
-    // 3. Set PYTHONPATH - needed even for --help, since export_data.py
-    //    imports func.* at module scope before argparse runs
-    cmdParts.push('export PYTHONPATH=$PYTHONPATH:/home/user/launchpad/libs');
-
-    // 4. Run python script
-    cmdParts.push(PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' ' + pythonArgs);
-
-    var fullCmd = cmdParts.join(' && ');
-    return ['/bin/su', ['-', username, '-c', fullCmd]];
+    } catch (e) { dbg('Could not read device SERIAL: ' + e); }
+    cmd.push('export PYTHONPATH="$PYTHONPATH:/home/user/launchpad/libs"');
+    cmd.push('exec ' + shellQuote(PYTHON_BIN) + ' ' + shellQuote(EXPORT_SCRIPT) + ' ' + pythonArgs);
+    return ['/bin/su', ['-', 'user', '-c', cmd.join(' && ')]];
 }
 
-// db.Put(key, object) serializes to JSON for storage, but db.Get(key)
-// hands back the raw stored string rather than parsing it - reading the
-// cache without this parse step silently produced a string whose property
-// accesses (cached.supportsSettingsOnly) were all undefined, which
-// JSON.stringify then drops from any message built from it.
-function readCachedCapabilities() {
-    var raw = db.Get(CAPABILITY_CACHE_KEY);
-    if (!raw) return null;
-    if (typeof raw !== 'string') return raw;
-    try {
-        return JSON.parse(raw);
-    } catch (e) {
-        dbg('readCachedCapabilities: failed to parse cached value: ' + e.toString());
-        return null;
+// Bound captured output; process errors and exit may both fire, but finish once.
+function runPython(pythonArgs, timeoutMs, callback) {
+    var proc, timer, done = false, stdout = '', stderr = '';
+    function finish(error) {
+        if (done) return;
+        done = true;
+        if (timer) clearTimeout(timer);
+        callback(stdout, error);
     }
-}
-
-// Runs export_data.py --help once, caches which capability-relevant flags
-// it advertises, and hands the result to callback. Cheap and side-effect
-// free: argparse's --help handling exits before any of the app's own logic
-// runs, so this never triggers a real export.
-function probeExportCapabilities(callback, force) {
-    if (!force) {
-        var cached = readCachedCapabilities();
-        // Older plugin versions persisted capabilities without this flag.
-        // Reprobe those entries; false is valid for older Launchpad builds.
-        if (cached && typeof cached.supportsArbitraryWindow === 'boolean') {
-            dbg('probeExportCapabilities: using cached result: ' + JSON.stringify(cached));
-            callback(cached);
-            return;
-        }
-    }
-
-    var childProcess = require('child_process');
-    var fs = require('fs');
-
     try {
-        if (!fs.existsSync(EXPORT_SCRIPT)) {
-            dbg('probeExportCapabilities: script not found: ' + EXPORT_SCRIPT);
-            var missing = { supports30m: false, supports2h: false, supportsSettingsOnly: false, supportsArbitraryWindow: false };
-            db.Put(CAPABILITY_CACHE_KEY, missing);
-            callback(missing);
-            return;
-        }
-    } catch (e) {
-        dbg('probeExportCapabilities: error checking script existence: ' + e.toString());
-    }
-
-    var argv = buildExportSuArgv('--help');
-    dbg('probeExportCapabilities: running ' + argv[0] + ' ' + argv[1].join(' '));
-
-    try {
-        var proc = childProcess.execFile(argv[0], argv[1], {});
-        var stdout = '';
-        var stderr = '';
-
-        proc.stdout.on('data', function (chunk) { stdout += chunk.toString(); });
-        proc.stderr.on('data', function (chunk) { stderr += chunk.toString(); });
-
+        if (!require('fs').existsSync(EXPORT_SCRIPT)) { finish('Script not found: ' + EXPORT_SCRIPT); return; }
+        var argv = buildExportSuArgv(pythonArgs);
+        proc = require('child_process').execFile(argv[0], argv[1], {});
+        if (!proc || !proc.stdout || !proc.stderr) { finish('Could not start Launchpad export process'); return; }
+        proc.stdout.on('data', function (chunk) { stdout = (stdout + chunk.toString()).slice(-65536); });
+        proc.stderr.on('data', function (chunk) { stderr = (stderr + chunk.toString()).slice(-65536); });
+        proc.on('error', function (error) { finish('Process error: ' + error); });
         proc.on('exit', function (code) {
-            dbg('probeExportCapabilities: --help exited with code ' + code);
-            var caps = {
+            finish(code === 0 ? null : 'Export process failed: ' + (stderr.trim() || stdout.trim() || 'exit code ' + code));
+        });
+        if (timeoutMs) timer = setTimeout(function () {
+            if (done) return;
+            finish('Launchpad capability check timed out');
+            try { proc.kill(); } catch (e) { }
+        }, timeoutMs);
+    } catch (e) { finish('Could not run Launchpad: ' + e); }
+}
+
+function readCachedCapabilities() {
+    try {
+        var raw = db.Get(CAPABILITY_CACHE_KEY);
+        var caps = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!caps || typeof caps.checkedAt !== 'number' || Date.now() < caps.checkedAt || Date.now() - caps.checkedAt >= CAPABILITY_TTL_MS) return null;
+        var fields = ['supports30m', 'supports2h', 'supportsSettingsOnly', 'supportsArbitraryWindow'];
+        for (var i = 0; i < fields.length; i++) if (typeof caps[fields[i]] !== 'boolean') return null;
+        return caps;
+    } catch (e) { return null; }
+}
+
+function probeExportCapabilities(callback, force) {
+    // Join an active probe so simultaneous UI checks/exports share one process.
+    if (probeWaiters) { probeWaiters.push(callback); return; }
+    var cached = !force && readCachedCapabilities();
+    if (cached) { callback(cached); return; }
+    probeWaiters = [callback];
+    runPython('--help', 20000, function (stdout, error) {
+        var caps = null;
+        if (!error) {
+            caps = {
                 supports30m: stdout.indexOf('30m') !== -1,
                 supports2h: stdout.indexOf('2h') !== -1,
                 supportsSettingsOnly: stdout.indexOf('--settings-only') !== -1,
-                // --log-window is the flag name introduced in the same
-                // Launchpad change as the full ISO-8601 grammar - its
-                // presence means any window value (not just the 30m/2h
-                // legacy shorthand) is accepted, e.g. 60m/120m.
-                supportsArbitraryWindow: stdout.indexOf('--log-window') !== -1
+                supportsArbitraryWindow: stdout.indexOf('--log-window') !== -1,
+                checkedAt: Date.now()
             };
-            dbg('probeExportCapabilities: result: ' + JSON.stringify(caps));
-            db.Put(CAPABILITY_CACHE_KEY, caps);
-            callback(caps);
-        });
-
-        proc.on('error', function (err) {
-            dbg('probeExportCapabilities: process error: ' + err.toString());
-            var errored = { supports30m: false, supports2h: false, supportsSettingsOnly: false, supportsArbitraryWindow: false };
-            callback(errored);
-        });
-    } catch (e) {
-        dbg('probeExportCapabilities: exception: ' + e.toString());
-        callback({ supports30m: false, supports2h: false, supportsSettingsOnly: false, supportsArbitraryWindow: false });
-    }
-}
-
-function runExportCommand(extraArgs) {
-    dbg('runExportCommand called' + (extraArgs ? ' extraArgs=' + extraArgs : ''));
-
-    var childProcess = require('child_process');
-    var fs = require('fs');
-
-    // Check if python script exists
-    try {
-        if (!fs.existsSync(EXPORT_SCRIPT)) {
-            dbg('Export script not found: ' + EXPORT_SCRIPT);
-            sendResult(false, 'Script not found: ' + EXPORT_SCRIPT);
-            return;
+            try { db.Put(CAPABILITY_CACHE_KEY, caps); } catch (e) { dbg('Cannot cache capabilities: ' + e); }
         }
-    } catch (e) {
-        dbg('Error checking script existence: ' + e.toString());
-        sendResult(false, 'Error checking script: ' + e.toString());
-        return;
-    }
-
-    var pythonArgs = '--mode server' + (extraArgs ? ' ' + extraArgs : '');
-    dbg('Executing: ' + PYTHON_BIN + ' ' + EXPORT_SCRIPT + ' ' + pythonArgs + ' (cwd: ' + EXPORT_CWD + ')');
-
-    try {
-        var argv = buildExportSuArgv(pythonArgs);
-        dbg('Executing via su - user: ' + argv[1][3]);
-
-        var proc = childProcess.execFile(argv[0], argv[1], {});
-        var stdout = '';
-        var stderr = '';
-
-        proc.stdout.on('data', function (chunk) {
-            stdout += chunk.toString();
-            dbg('stdout: ' + chunk.toString().trim());
-        });
-
-        proc.stderr.on('data', function (chunk) {
-            stderr += chunk.toString();
-            dbg('stderr: ' + chunk.toString().trim());
-        });
-
-        proc.on('exit', function (code) {
-            dbg('Process exited with code: ' + code);
-            if (code === 0) {
-                sendResult(true, 'Export completed successfully');
-            } else {
-                var errMsg = stderr.trim() || stdout.trim() || 'Exit code: ' + code;
-                sendResult(false, 'Export failed: ' + errMsg);
-            }
-        });
-
-        proc.on('error', function (err) {
-            dbg('Process error: ' + err.toString());
-            sendResult(false, 'Process error: ' + err.toString());
-        });
-
-    } catch (e) {
-        dbg('Exception running command: ' + e.toString());
-        sendResult(false, 'Exception: ' + e.toString());
-    }
-}
-
-// Sends a message back to the server. mesh.SendCommand is the standard
-// primitive every MeshCentral plugin uses for this (consoleaction sets
-// mesh = parent, the same connection object meshcore.js itself calls
-// SendCommand on elsewhere) - falls back to the global MeshAgent object
-// only in the unexpected case mesh itself isn't set.
-function sendToServer(response) {
-    dbg('sendToServer: ' + JSON.stringify(response));
-    try {
-        (mesh || require('MeshAgent')).SendCommand(response);
-    } catch (e) {
-        dbg('Error sending via SendCommand: ' + e.toString());
-    }
-}
-
-function sendResult(success, message) {
-    dbg('sendResult: success=' + success + ', message=' + message);
-    sendToServer({
-        action: 'plugin',
-        plugin: 'omniossendlogs',
-        pluginaction: 'exportResult',
-        success: success,
-        message: message
+        var waiters = probeWaiters;
+        probeWaiters = null;
+        for (var i = 0; i < waiters.length; i++) waiters[i](caps, error);
     });
 }
 

@@ -6,19 +6,41 @@ Plugin that adds buttons to send OmniOS and apps logs, and OmniOS settings, to a
 
 - Displays "Export Logs", "Export Trajectories" and "Export Settings" links after the Apps section (from OmniOSVersion plugin) on the General tab.
 - On Launchpad builds that support an arbitrary log window (`--log-window`), "Export Logs" becomes three explicit links — "Export Logs (last 30 min)", "(last 60 min)", "(last 120 min)" — each sending exactly that window. On older builds it stays a single "Export Logs" link that sends the most recent time window the installed Launchpad supports: 30 minutes, falling back to 2 hours, falling back to the last session.
-- "Export Settings" packages only `OmniPack` and `OmniControl` from `DATA_MOUNT_POINT` (no logs, no other settings folders). Disabled until the agent confirms the installed `export_data.py` actually supports `--settings-only`, so it can never be clicked into a doomed export on an old Launchpad.
+- "Export Settings" packages only `OmniPack` and `OmniControl` from `DATA_MOUNT_POINT` (no logs, no other settings folders). Disabled until the agent confirms `--settings-only` support. The agent checks support again when executing the operation.
 - Executes `python3 /home/user/launchpad/pages/data/export_data.py --mode server [args]` on the agent (as user `user`, via `su`).
 - Shows export status (running/success/error).
 - No admin panel or configuration.
 
 ## Installation
 
-1. Copy the `MeshCentral-OmniOSSendLogs` folder into the MeshCentral plugins directory.
-2. Restart MeshCentral to load the plugin.
+Enable plugins in the running MeshCentral configuration and install through the plugin manager. For manual installation, use `<meshcentral-data>/plugins/omniossendlogs/` and register `omniossendlogs` through the plugin database or `settings.plugins.list`.
 
-Version 1.2.15 refreshes capability caches created before arbitrary log-window detection was added, so supported devices show the 30/60/120-minute links after upgrading without manually clearing agent storage.
+### Updating an installed plugin
 
-When updating an existing installation, reload the plugin, run `distributeCore()` from the MeshCentral admin browser console, wait a few seconds, then fully reload the device page to load the updated browser code.
+Version 1.3.0 adds correlated requests and agent-side permission checks. Update server, agent and browser together; older agents do not echo the required request IDs. Avoid updating cores during an export.
+
+1. Copy the updated files into the installed plugin directory and use the plugin's **Reload** action.
+2. Rebuild and synchronize the default core on a test device from an authenticated admin browser console:
+
+   ```javascript
+   meshserver.send({action: 'uploadagentcore', type: 'default', nodeids: ['node/<domain>/<device-id>']});
+   ```
+
+3. Wait for the agent core to become stable, then fully reload the device page.
+4. Verify capabilities and an export before updating other devices. In this MeshCentral checkout, `distributeCore()` synchronizes the server's existing bundle; it does not rebuild edited modules from disk.
+
+## Access and request handling
+
+- Inventory/capability reads require device visibility. Starting any export requires **Agent Console** rights (`0x10`) on that device; the agent also enforces this on direct routed/console commands.
+- Requests use the authenticated user's device rights and socket session. Results are matched to the originating agent and operation ID, with permissions checked again before delivery.
+- An overlapping export returns a busy error instead of receiving another export's result. The agent also rejects overlapping exports.
+- Offline/send failures return errors immediately. The server stops waiting for an export after 30 minutes, and the browser has a 31-minute fallback timeout. This does **not** cancel the device process: it may still run, and the agent stays busy until it finishes. Do not redistribute cores while it is running.
+
+## Capability cache
+
+Successful probes are cached on the agent for five minutes, including explicit `false` values. Old/malformed/expired caches are refreshed automatically. A failed/missing/timed-out `--help` produces an error and is not cached as unsupported. Simultaneous checks share a probe; the probe timeout is 20 seconds.
+
+The **Refresh** link forces a new capability check. Browser checks expire after five minutes and are re-requested on device refresh; a lost response releases the browser's pending state so Refresh or a subsequent device refresh can retry without reloading the page.
 
 ## Usage
 
@@ -26,7 +48,8 @@ When updating an existing installation, reload the plugin, run `distributeCore()
 - Click "Export Logs" (or one of the "(last N min)" variants, once shown) to send the most recent logs for that window.
 - Click "Export Trajectories" to include trajectory data.
 - Click "Export Settings" (once enabled) to send just the `OmniPack`/`OmniControl` settings folders.
-- Status updates will show the result of the operation.
+- Use "Refresh" to recheck Launchpad capabilities after an update or a failed probe.
+- Status updates show the result reported by Launchpad; archive creation/upload is performed by Launchpad itself.
 
 ## Requirements
 
@@ -44,8 +67,8 @@ The Python interpreter and script path can be changed in `modules_meshcore/omnio
 
 ## Development
 
-Run the capability-cache regression tests with Node.js 18 or newer:
+Run the regression tests with Node.js 18 or newer:
 
 ```sh
-node --test tests/capability-cache.test.js
+node --test tests/*.test.js
 ```
