@@ -116,6 +116,16 @@ test('ignores replies from a replaced agent connection', () => {
     assert.equal(h.replies.length, count);
 });
 
+test('a send failure reported only via callback completes the request instead of hanging until the timeout', () => {
+    const h = setup();
+    // Mirrors the real agent.send(data, func) in meshagent.js: it swallows a
+    // synchronous throw itself and reports a closed WebSocket only via the callback.
+    h.webserver.wsagents[nodeid] = { dbNodeKey: nodeid, send: (data, callback) => callback(new Error('WebSocket is not open')) };
+    h.obj.serveraction({pluginaction: 'triggerExport', nodeid, window: '30m'}, h.browser, h.webserver);
+    assert.equal(h.replies.at(-1).data.status, 'error');
+    assert(h.timers[0].cancelled);
+    assert.equal(Object.keys(h.obj.inflight).length, 0);
+});
 test('different exports receive busy instead of sharing a success result', () => {
     const h = setup();
     h.obj.serveraction({pluginaction: 'triggerExport', nodeid, window: '30m', clientRequestId: 'a'}, h.browser, h.webserver);

@@ -136,8 +136,11 @@ module.exports.omniossendlogs = function (parent) {
             requestId: entry.id, rights: command.rights, force: command.force === true};
         if (command.pluginaction === 'triggerExport' && ['30m', '60m', '120m'].indexOf(command.window) !== -1) request.window = command.window;
         if (!capability) respond(client, method, {status: 'running', message: 'Export started...'});
-        try { agent.send(JSON.stringify(request)); }
-        catch (e) { complete(entry, {status: 'error', error: 'Cannot contact device', message: 'Cannot contact device'}); }
+        // agent.send() (meshagent.js) swallows synchronous throws itself and reports
+        // WebSocket send errors (e.g. a connection that closed mid-send) only via callback.
+        function sendFailed() { complete(entry, {status: 'error', error: 'Cannot contact device', message: 'Cannot contact device'}); }
+        try { agent.send(JSON.stringify(request), function (err) { if (err) sendFailed(); }); }
+        catch (e) { sendFailed(); }
     }
 
     // --- web hooks ---
