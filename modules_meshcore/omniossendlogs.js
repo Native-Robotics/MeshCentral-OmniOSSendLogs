@@ -6,6 +6,10 @@ var EXPORT_SCRIPT = '/home/user/launchpad/pages/data/export_data.py';
 var EXPORT_CWD = '/home/user/launchpad';
 var CAPABILITY_CACHE_KEY = 'plugin_omniossendlogs_capabilities_cache';
 var CAPABILITY_TTL_MS = 5 * 60 * 1000;
+// argparse can wrap "(0, 1, 5, 42)" across lines at whitespace boundaries within
+// --help. \s+ survives that wrap but still requires this exact digit sequence -
+// it won't match a stray "0" inside 30m/120m/timestamps elsewhere in --help.
+var ZERO_SESSION_HELP_PATTERN = /\(0,\s+1,\s+5,\s+42\)/;
 var probeWaiters = null;
 var exportBusy = false;
 
@@ -51,7 +55,20 @@ function consoleaction(args, rights, sessionid, parent) {
         dbg('Export arguments: ' + extraArgs);
         runPython('--mode server ' + extraArgs, 0, function (stdout, error) { finish(error); });
     }
-    if (action === 'runExportTrajectories') { run('-t yes -l 1'); return; }
+    if (action === 'runExportTrajectories') {
+        probeExportCapabilities(function (caps, error) {
+            var sessionArg = '1';
+            if (error) {
+                dbg('runExportTrajectories: capability probe failed (' + error + '); using -l 1');
+            } else if (caps.supportsZeroSessionWindow) {
+                sessionArg = '0';
+            } else {
+                dbg('runExportTrajectories: installed Launchpad does not support -l 0; using -l 1');
+            }
+            run('-t yes -l ' + sessionArg);
+        });
+        return;
+    }
     var window = ['30m', '60m', '120m'].indexOf(args.window) !== -1 ? args.window : null;
     probeExportCapabilities(function (caps, error) {
         if (error) { finish(error); return; }
@@ -122,7 +139,7 @@ function readCachedCapabilities() {
         var raw = db.Get(CAPABILITY_CACHE_KEY);
         var caps = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (!caps || typeof caps.checkedAt !== 'number' || Date.now() < caps.checkedAt || Date.now() - caps.checkedAt >= CAPABILITY_TTL_MS) return null;
-        var fields = ['supports30m', 'supports2h', 'supportsSettingsOnly', 'supportsArbitraryWindow'];
+        var fields = ['supports30m', 'supports2h', 'supportsSettingsOnly', 'supportsArbitraryWindow', 'supportsZeroSessionWindow'];
         for (var i = 0; i < fields.length; i++) if (typeof caps[fields[i]] !== 'boolean') return null;
         return caps;
     } catch (e) { return null; }
@@ -142,6 +159,7 @@ function probeExportCapabilities(callback, force) {
                 supports2h: stdout.indexOf('2h') !== -1,
                 supportsSettingsOnly: stdout.indexOf('--settings-only') !== -1,
                 supportsArbitraryWindow: stdout.indexOf('--log-window') !== -1,
+                supportsZeroSessionWindow: ZERO_SESSION_HELP_PATTERN.test(stdout),
                 checkedAt: Date.now()
             };
             try { db.Put(CAPABILITY_CACHE_KEY, caps); } catch (e) { dbg('Cannot cache capabilities: ' + e); }

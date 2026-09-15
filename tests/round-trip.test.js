@@ -6,7 +6,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const {EventEmitter} = require('node:events');
 const pluginName = 'omniossendlogs';
-test('browser, server and agent complete the correlated protocol round trip', () => {
+for (const zeroSessionWindow of [false, true]) {
+test('browser, server and agent complete the correlated protocol round trip (trajectories -l 0 support = ' + zeroSessionWindow + ')', () => {
     const nodeid = 'node/test/device', processes = [], store = new Map(), transcript = [];
     const fakeTimers = {setTimeout() {return 1;}, clearTimeout() {}};
     let server, agentModule, browser;
@@ -52,12 +53,20 @@ test('browser, server and agent complete the correlated protocol round trip', ()
     h.onDeviceRefreshEnd();
     if (pluginName === 'omniossendlogs') {
         const probe = processes.shift();
-        probe.p.stdout.emit('data', '--log-window --settings-only 30m 2h'); probe.p.emit('exit', 0);
+        const helpText = '--log-window --settings-only 30m 2h' + (zeroSessionWindow ? ' a session count (0, 1, 5, 42), all,' : '');
+        probe.p.stdout.emit('data', helpText); probe.p.emit('exit', 0);
         assert.equal(h.windowCapability[nodeid], true);
         h.triggerExport('60m');
         const operation = processes.shift();
         assert(operation.args[3].endsWith('--mode server -l 60m'));
         operation.p.emit('exit', 0);
+        assert.equal(h.exportStatus[nodeid].status, 'success');
+        assert.equal(Object.keys(server.inflight).length, 0);
+
+        h.triggerExportTrajectories();
+        const trajOperation = processes.shift();
+        assert(trajOperation.args[3].endsWith('--mode server -t yes -l ' + (zeroSessionWindow ? '0' : '1')));
+        trajOperation.p.emit('exit', 0);
         assert.equal(h.exportStatus[nodeid].status, 'success');
         assert.equal(Object.keys(server.inflight).length, 0);
     } else {
@@ -68,3 +77,4 @@ test('browser, server and agent complete the correlated protocol round trip', ()
     }
     assert(transcript.every(message => typeof message.data.clientRequestId === 'string'));
 });
+}

@@ -90,7 +90,7 @@ for (const arbitraryWindow of [true, false]) {
         assert.match(agent.commands[0].args[3], /export_data\.py\' --help$/);
         const saved = JSON.parse(store.get(cacheKey));
         assert.equal(typeof saved.checkedAt, 'number');
-        assert.deepEqual(saved, { ...legacyCaps, supportsArbitraryWindow: arbitraryWindow, checkedAt: saved.checkedAt });
+        assert.deepEqual(saved, { ...legacyCaps, supportsArbitraryWindow: arbitraryWindow, supportsZeroSessionWindow: false, checkedAt: saved.checkedAt });
 
         // A fresh module instance must reuse the persisted migration result.
         const reloaded = loadAgent(store, '');
@@ -99,7 +99,7 @@ for (const arbitraryWindow of [true, false]) {
     });
 
     test('reuses current cache with arbitrary window support = ' + arbitraryWindow, () => {
-        const store = new Map([[cacheKey, JSON.stringify({ ...legacyCaps, supportsArbitraryWindow: arbitraryWindow, checkedAt: Date.now() })]]);
+        const store = new Map([[cacheKey, JSON.stringify({ ...legacyCaps, supportsArbitraryWindow: arbitraryWindow, supportsZeroSessionWindow: false, checkedAt: Date.now() })]]);
         const agent = loadAgent(store, '');
         assert.equal(agent.check().arbitraryWindow, arbitraryWindow);
         assert.equal(agent.commands.length, 0);
@@ -176,4 +176,149 @@ test('shell command quotes SERIAL data and keeps the selected window literal', (
     agent.drain();
     assert(agent.commands[0].args[3].includes("export SERIAL='O'\\''Brien;touch /tmp/pwned'"));
     assert(agent.commands[1].args[3].endsWith('--mode server -l 120m'));
+});
+
+test('runExportTrajectories omits sessions once the agent confirms -l 0 support', () => {
+    const store = new Map();
+    const agent = loadAgent(store, '--log-window --settings-only 30m 2h a session count (0, 1, 5, 42), all, an ISO 8601 duration');
+    agent.act('runExportTrajectories', {requestId: 'traj'});
+    agent.drain();
+    assert.equal(agent.commands.length, 2);
+    assert.match(agent.commands[0].args[3], /export_data\.py\' --help$/);
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 0'));
+    assert.equal(JSON.parse(store.get(cacheKey)).supportsZeroSessionWindow, true);
+    assert(agent.responses.some(r => r.requestId === 'traj' && r.success === true));
+});
+
+test('runExportTrajectories keeps -l 1 on an old Launchpad with no --log-window at all', () => {
+    const store = new Map();
+    const agent = loadAgent(store, '--settings-only 30m 2h');
+    agent.act('runExportTrajectories');
+    agent.drain();
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 1'));
+    assert.equal(JSON.parse(store.get(cacheKey)).supportsZeroSessionWindow, false);
+});
+
+test('runExportTrajectories keeps -l 1 when --log-window exists but its example list has no 0', () => {
+    const store = new Map();
+    const agent = loadAgent(store, '--log-window --settings-only 30m 2h a session count (1, 5, 42), all, an ISO 8601 duration');
+    agent.act('runExportTrajectories');
+    agent.drain();
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 1'));
+    assert.equal(JSON.parse(store.get(cacheKey)).supportsZeroSessionWindow, false);
+});
+
+test('runExportTrajectories detects -l 0 support even when argparse wraps the example list', () => {
+    const store = new Map();
+    const wrapped = '--log-window --settings-only 30m 2h a session count (0, 1,\n' +
+        '                        5, 42), all, an ISO 8601 duration';
+    const agent = loadAgent(store, wrapped);
+    agent.act('runExportTrajectories');
+    agent.drain();
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 0'));
+    assert.equal(JSON.parse(store.get(cacheKey)).supportsZeroSessionWindow, true);
+});
+
+test('a decoy 0 elsewhere in --help does not cause a false positive', () => {
+    const store = new Map();
+    const decoy = '--log-window --settings-only 30m 120m a session count (1, 5, 42), all, ' +
+        'an ISO 8601 interval (2026-07-16T09:00:00Z/PT2H) or the legacy 30m/2h/1d shorthand (default: 5)';
+    const agent = loadAgent(store, decoy);
+    agent.act('runExportTrajectories');
+    agent.drain();
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 1'));
+    assert.equal(JSON.parse(store.get(cacheKey)).supportsZeroSessionWindow, false);
+});
+
+test('a stale cache without supportsZeroSessionWindow triggers exactly one fresh probe', () => {
+    const store = new Map([[cacheKey, JSON.stringify({...legacyCaps, supportsArbitraryWindow: true, checkedAt: Date.now()})]]);
+    const agent = loadAgent(store, '--log-window --settings-only 30m 2h (0, 1, 5, 42)');
+    agent.act('runExportTrajectories');
+    agent.drain();
+    assert.equal(agent.commands.length, 2); // one --help probe, then the export - not zero, not more
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 0'));
+    assert.equal(JSON.parse(store.get(cacheKey)).supportsZeroSessionWindow, true);
+});
+
+for (const zeroSessionWindow of [true, false]) {
+    test('a valid fresh cache with supportsZeroSessionWindow = ' + zeroSessionWindow + ' is used without a new probe', () => {
+        const store = new Map([[cacheKey, JSON.stringify({...legacyCaps, supportsArbitraryWindow: true, supportsZeroSessionWindow: zeroSessionWindow, checkedAt: Date.now()})]]);
+        const agent = loadAgent(store, ''); // no --help call expected, so the fixture content is irrelevant
+        agent.act('runExportTrajectories');
+        agent.drain();
+        assert.equal(agent.commands.length, 1); // only the export call, no --help call
+        assert(agent.commands[0].args[3].endsWith('--mode server -t yes -l ' + (zeroSessionWindow ? '0' : '1')));
+    });
+}
+
+test('reprobes when the cached zero-session window flag has an invalid type', () => {
+    for (const invalid of [null, 'false', 'true', 0, 1, [], {}]) {
+        const store = new Map([[cacheKey, JSON.stringify({...legacyCaps, supportsArbitraryWindow: true, supportsZeroSessionWindow: invalid})]]);
+        const agent = loadAgent(store, '--settings-only --log-window 30m 2h (0, 1, 5, 42)');
+        assert.equal(agent.check().arbitraryWindow, true);
+        assert.equal(agent.commands.length, 1);
+        assert.equal(JSON.parse(store.get(cacheKey)).supportsZeroSessionWindow, true);
+    }
+});
+
+test('expired zero-session capability and forced refresh probe installed Launchpad again', () => {
+    for (const force of [false, true]) {
+        const store = new Map([[cacheKey, JSON.stringify({...legacyCaps, supportsArbitraryWindow: true, supportsZeroSessionWindow: false,
+            checkedAt: force ? Date.now() : Date.now() - 300001})]]);
+        const agent = loadAgent(store, '--log-window --settings-only (0, 1, 5, 42)');
+        assert.equal(agent.check(force).arbitraryWindow, true);
+        assert.equal(agent.commands.length, 1);
+        assert.equal(JSON.parse(store.get(cacheKey)).supportsZeroSessionWindow, true);
+    }
+});
+
+test('a probe exit failure while exporting trajectories falls back to -l 1 without caching a negative result', () => {
+    const store = new Map();
+    const agent = loadAgent(store, '');
+    agent.act('runExportTrajectories', {requestId: 'traj-err'});
+    agent.drain(1); // --help exits non-zero; cascades synchronously into the actual export call
+    assert.equal(agent.commands.length, 2);
+    assert.match(agent.commands[0].args[3], /export_data\.py\' --help$/);
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 1'));
+    assert.equal(store.size, 0);
+});
+
+test('a probe timeout while exporting trajectories falls back to -l 1 without caching a negative result', () => {
+    const store = new Map();
+    const agent = loadAgent(store, '');
+    agent.act('runExportTrajectories', {requestId: 'traj-timeout'});
+    agent.timers[0](); // fire the --help probe's 20s timeout synchronously
+    assert.equal(agent.responses.length, 0); // no exportResult yet: the fallback proceeds straight to run()
+    assert.equal(agent.commands.length, 2); // --help call plus the now-queued -t yes -l 1 export call
+    agent.drain(); // let the actual export process complete
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 1'));
+    assert.equal(store.size, 0);
+    assert.equal(agent.responses.length, 1);
+    assert.equal(agent.responses[0].success, true);
+});
+
+test('runExportTrajectories shares one probe with a concurrent capability check', () => {
+    const agent = loadAgent(new Map(), '--log-window --settings-only 30m 2h (0, 1, 5, 42)');
+    agent.act('runExportTrajectories', {requestId: 'traj'});
+    agent.act('checkExportCapabilities', {requestId: 'probe'});
+    assert.equal(agent.commands.length, 1); // only the shared --help call so far
+    agent.drain();
+    assert.equal(agent.commands.length, 2); // --help, then the trajectories export
+    assert(agent.commands[1].args[3].endsWith('--mode server -t yes -l 0'));
+    assert(agent.responses.some(r => r.requestId === 'probe' && r.arbitraryWindow === true));
+    assert(agent.responses.some(r => r.requestId === 'traj' && r.success === true));
+});
+
+test('a second runExportTrajectories call is rejected as busy while the first is still probing', () => {
+    const agent = loadAgent(new Map(), '--log-window --settings-only 30m 2h (0, 1, 5, 42)');
+    agent.act('runExportTrajectories', {requestId: 'first'});
+    agent.act('runExportTrajectories', {requestId: 'second'});
+    assert.equal(agent.responses.length, 1);
+    assert.equal(agent.responses[0].requestId, 'second');
+    assert.equal(agent.responses[0].success, false);
+    assert.match(agent.responses[0].message, /still running/);
+    agent.drain();
+    assert.equal(agent.responses.length, 2);
+    assert.equal(agent.responses[1].requestId, 'first');
+    assert.equal(agent.responses[1].success, true);
 });
